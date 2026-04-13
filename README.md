@@ -2,7 +2,7 @@
 
 Convert [Songsterr](https://www.songsterr.com) drum tabs into [Clone Hero](https://clonehero.net) expert drum charts, automatically aligned to a YouTube audio track.
 
-<video src="docs/demo.webm" controls width="720"></video>
+https://github.com/rtribbia/chartster/raw/refs/heads/main/docs/demo.webm
 
 
 
