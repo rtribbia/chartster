@@ -1,0 +1,7 @@
+exported
+CLAUDE.md
+*.egg-info/
+__pycache__/
+*.pyc
+build/
+dist/
