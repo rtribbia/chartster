@@ -803,6 +803,18 @@ class Wizard(QWizard):
         self.addPage(OutputPage(self.state))
         self.addPage(RunPage(self.state))
 
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            btn = self.button(QWizard.NextButton)
+            if btn.isVisible() and btn.isEnabled():
+                btn.click()
+                return
+            fbtn = self.button(QWizard.FinishButton)
+            if fbtn.isVisible() and fbtn.isEnabled():
+                fbtn.click()
+                return
+        super().keyPressEvent(event)
+
 
 def main() -> None:
     app = QApplication(sys.argv)
