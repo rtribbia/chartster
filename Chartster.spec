@@ -21,14 +21,13 @@ excludes = [
     "PySide6.QtPrintSupport",
     "PySide6.QtSvg",
     "PySide6.QtSvgWidgets",
-    # Stdlib modules we don't use
+    # Stdlib modules we don't use. email/http/urllib are load-bearing for
+    # urllib.request — do NOT exclude them.
     "tkinter",
     "unittest",
     "test",
     "pydoc",
     "pdb",
-    "email",
-    "http",
     "xmlrpc",
 ]
 
