@@ -605,7 +605,7 @@ class OutputPage(QWizardPage):
 
     def _refresh_ytdlp_row(self):
         want = self.download_cb.isChecked()
-        missing = shutil.which("yt-dlp") is None
+        missing = not _ytdlp_works("yt-dlp")
         self.ytdlp_row.setVisible(want and missing)
         self.completeChanged.emit()
 
@@ -729,12 +729,17 @@ class RunPage(QWizardPage):
         dst = self._out_dir / "song.mp3"
         self._append(f"Downloading audio via yt-dlp from youtu.be/{vid}…")
         try:
+            popen_kwargs = dict(
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             self._proc = subprocess.Popen(
                 [self.state.ytdlp_path, "-x", "--audio-format", "mp3",
                  "--audio-quality", "0", "--no-playlist", "--newline",
                  "-o", str(dst.with_suffix(".%(ext)s")), url],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
+                **popen_kwargs,
             )
         except FileNotFoundError:
             self._append("  yt-dlp not installed — skipping.")
@@ -779,6 +784,17 @@ class RunPage(QWizardPage):
 
     def isComplete(self) -> bool:
         return self._done
+
+
+def _ytdlp_works(path: str) -> bool:
+    """True if `path --version` runs successfully."""
+    kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        return subprocess.run([path, "--version"], **kwargs).returncode == 0
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _tildify(s: str) -> str:
