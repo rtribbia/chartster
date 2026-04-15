@@ -42,7 +42,7 @@ Grab the latest `Chartster-macos.zip` or `Chartster-windows.zip` from the [Relea
 Requirements:
 - Python ≥ `3.9.6`
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on `PATH` if you want audio download
-- [`ffmpeg`](https://ffmpeg.org/download.html) on `PATH` (required by `yt-dlp` for MP3 extraction)
+- [`ffmpeg`](https://github.com/BtbN/FFmpeg-Builds/releases) on `PATH` (required by `yt-dlp` for MP3 extraction)
 
 ```bash
 pip install -e '.[gui]'

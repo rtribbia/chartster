@@ -566,13 +566,14 @@ class OutputPage(QWizardPage):
         self.download_cb.setChecked(True)
         layout.addWidget(self.download_cb)
 
+        exe_suffix = ".exe" if sys.platform == "win32" else ""
         self.ytdlp_row, self.ytdlp_edit = self._build_tool_row(
-            layout, "yt-dlp", "/path/to/yt-dlp",
+            layout, "yt-dlp", f"/path/to/yt-dlp{exe_suffix}",
             "https://github.com/yt-dlp/yt-dlp/releases",
         )
         self.ffmpeg_row, self.ffmpeg_edit = self._build_tool_row(
-            layout, "ffmpeg", "/path/to/ffmpeg",
-            "https://ffmpeg.org/download.html",
+            layout, "ffmpeg", f"/path/to/ffmpeg{exe_suffix}",
+            "https://github.com/BtbN/FFmpeg-Builds/releases",
         )
 
         self.download_cb.toggled.connect(self._refresh_tool_rows)
