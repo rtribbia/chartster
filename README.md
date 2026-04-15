@@ -69,6 +69,15 @@ python3 -m chartster.gui
 5. Choose an output folder. 
 6. Import the outputted folder into Clone Hero or Moonscraper!
 
+## Config file
+
+On first run Chartster writes `chartster-config.ini` next to the executable (or in the current directory when running from source). It contains:
+
+- `[paths]` — last-used locations for `yt-dlp`, `ffmpeg`, and the parent export folder. Updated automatically.
+- `[mappings]` — default lane assignment for every Songsterr drum ID. **Only written once on first launch** — after that, the file is yours. Edit any value to change the default lane Chartster pre-selects for that drum across all songs. The comment block at the top lists every valid drum ID and the allowed lane labels.
+
+You can override any default per-song via the mapping screen without touching the file.
+
 ## Releasing (maintainers)
 
 Tag a commit with `vX.Y.Z` and push the tag — GitHub Actions builds macOS + Windows bundles and attaches them to a new Release automatically.

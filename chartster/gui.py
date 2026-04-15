@@ -374,6 +374,7 @@ class MappingPage(QWizardPage):
             if not counts:
                 self.status.setText("No drums found on this track.")
                 return
+            saved_mappings = cfg.load_mappings()
             self.status.setText(f"{len(counts)} distinct drums in this track.")
             for fret in sorted(counts, key=lambda f: -counts[f]):
                 n = counts[fret]
@@ -391,17 +392,21 @@ class MappingPage(QWizardPage):
                 combo.view().setIconSize(QSize(40, 40))
                 default_lane = SONGSTERR_TO_CH.get(fret)
                 default_idx = 0
+                saved_label = saved_mappings.get(fret)
                 for i, (name, lane) in enumerate(LANE_OPTIONS):
                     icon = _lane_icon(lane)
                     if icon is not None:
                         combo.addItem(icon, name, lane)
                     else:
                         combo.addItem(name, lane)
-                    if default_lane is not None and lane is not None \
+                    if saved_label is None and default_lane is not None \
+                            and lane is not None \
                             and lane.lane == default_lane.lane \
                             and lane.is_cymbal == default_lane.is_cymbal:
                         default_idx = i
-                if default_lane is None:
+                    if saved_label is not None and name == saved_label:
+                        default_idx = i
+                if saved_label is None and default_lane is None:
                     # Unknown fret → default to Remove
                     default_idx = len(LANE_OPTIONS) - 1
                 combo.setCurrentIndex(default_idx)
@@ -925,6 +930,7 @@ class Wizard(QWizard):
 
 
 def main() -> None:
+    cfg.bootstrap_if_missing()
     app = QApplication(sys.argv)
     w = Wizard()
     w.show()

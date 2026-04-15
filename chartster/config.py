@@ -24,6 +24,7 @@ def _config_dir() -> Path:
 
 CONFIG_PATH = _config_dir() / "chartster-config.ini"
 SECTION = "paths"
+MAPPINGS_SECTION = "mappings"
 
 
 def load() -> dict:
@@ -40,13 +41,76 @@ def load() -> dict:
 
 
 def save(values: dict) -> None:
+    _write_section(SECTION, {k: str(v) for k, v in values.items() if v})
+
+
+def load_mappings() -> dict[int, str]:
+    """fret -> LANE_OPTIONS label."""
+    if not CONFIG_PATH.exists():
+        return {}
+    cp = configparser.ConfigParser()
+    try:
+        cp.read(CONFIG_PATH, encoding="utf-8")
+        if MAPPINGS_SECTION not in cp:
+            return {}
+        out = {}
+        for k, v in cp[MAPPINGS_SECTION].items():
+            try:
+                out[int(k)] = v
+            except ValueError:
+                continue
+        return out
+    except Exception:
+        return {}
+
+
+def bootstrap_if_missing() -> None:
+    """On first run, seed the config with every known drum ID and its default
+    lane label. Never overwrites an existing file — the user owns it from then
+    on.
+    """
+    if CONFIG_PATH.exists():
+        return
+    from .mapping import LANE_OPTIONS, SONGSTERR_TO_CH
+    label_for_lane = {}
+    for name, lane in LANE_OPTIONS:
+        if lane is not None:
+            label_for_lane[(lane.lane, lane.is_cymbal)] = name
+    defaults = {}
+    for fret, lane in sorted(SONGSTERR_TO_CH.items()):
+        defaults[str(fret)] = label_for_lane.get((lane.lane, lane.is_cymbal), "— Remove —")
+    _write_section(MAPPINGS_SECTION, defaults, replace=True)
+
+
+def _write_section(section: str, values: dict, replace: bool = False) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     cp = configparser.ConfigParser()
-    cp.read(CONFIG_PATH, encoding="utf-8") if CONFIG_PATH.exists() else None
-    if SECTION not in cp:
-        cp[SECTION] = {}
+    if CONFIG_PATH.exists():
+        cp.read(CONFIG_PATH, encoding="utf-8")
+    if replace or section not in cp:
+        cp[section] = {}
     for k, v in values.items():
-        if v:
-            cp[SECTION][k] = str(v)
+        cp[section][k] = v
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write(_header())
         cp.write(f)
+
+
+def _header() -> str:
+    # Local import to avoid circular imports at module load time.
+    from .mapping import DRUM_NAMES
+    lines = [
+        "# Chartster config — edit with care.",
+        "#",
+        "# [paths] — remembered executable + export-folder locations.",
+        "# [mappings] — per-drum-id lane overrides. Values must match one of:",
+        "#   Kick, Red (snare), Yellow tom, Yellow cymbal, Blue tom,",
+        "#   Blue cymbal, Green tom, Green cymbal, — Remove —",
+        "#",
+        "# Drum ID reference:",
+    ]
+    for fid in sorted(DRUM_NAMES):
+        lines.append(f"#   {fid:>3} = {DRUM_NAMES[fid]}")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
