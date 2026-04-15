@@ -43,7 +43,10 @@ from .mapping import (
     BLUE, GREEN, LANE_OPTIONS, RED, SONGSTERR_TO_CH, YELLOW, drum_name,
 )
 
-ASSETS_DIR = Path(__file__).parent / "assets"
+if getattr(sys, "frozen", False):
+    ASSETS_DIR = Path(sys._MEIPASS) / "chartster" / "assets"
+else:
+    ASSETS_DIR = Path(__file__).parent / "assets"
 _LANE_ASSET = {
     (RED, False): "red_pad.gif",
     (YELLOW, False): "yellow_pad.gif",
@@ -103,6 +106,7 @@ class State:
     song_name: str = ""
     artist: str = ""
     download_audio: bool = True
+    ytdlp_path: str = "yt-dlp"
 
 
 class _Emitter(QObject):
@@ -560,6 +564,29 @@ class OutputPage(QWizardPage):
         self.download_cb.setChecked(True)
         layout.addWidget(self.download_cb)
 
+        self.ytdlp_row = QWidget()
+        yt_row = QHBoxLayout(self.ytdlp_row)
+        yt_row.setContentsMargins(0, 0, 0, 0)
+        self.ytdlp_label = QLabel(
+            'yt-dlp not found on PATH — browse to it '
+            '(<a href="https://github.com/yt-dlp/yt-dlp/releases">download</a>):'
+        )
+        self.ytdlp_label.setStyleSheet("color: #c60;")
+        self.ytdlp_label.setTextFormat(Qt.RichText)
+        self.ytdlp_label.setOpenExternalLinks(True)
+        self.ytdlp_edit = QLineEdit()
+        self.ytdlp_edit.setPlaceholderText("/path/to/yt-dlp")
+        self.ytdlp_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+        yt_browse = QPushButton("Browse…")
+        yt_browse.clicked.connect(self._browse_ytdlp)
+        yt_row.addWidget(self.ytdlp_label)
+        yt_row.addWidget(self.ytdlp_edit, 1)
+        yt_row.addWidget(yt_browse)
+        layout.addWidget(self.ytdlp_row)
+        self.ytdlp_row.setVisible(False)
+
+        self.download_cb.toggled.connect(self._refresh_ytdlp_row)
+
         self.info = QLabel("")
         self.info.setWordWrap(True)
         layout.addWidget(self.info)
@@ -570,6 +597,17 @@ class OutputPage(QWizardPage):
         d = QFileDialog.getExistingDirectory(self, "Choose export directory", start)
         if d:
             self.dir_edit.setText(_tildify(d))
+
+    def _browse_ytdlp(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Locate yt-dlp executable", str(Path.home()))
+        if f:
+            self.ytdlp_edit.setText(_tildify(f))
+
+    def _refresh_ytdlp_row(self):
+        want = self.download_cb.isChecked()
+        missing = shutil.which("yt-dlp") is None
+        self.ytdlp_row.setVisible(want and missing)
+        self.completeChanged.emit()
 
     def initializePage(self) -> None:
         default_name = self.state.song_name or f"song-{self.state.song_id}"
@@ -583,13 +621,22 @@ class OutputPage(QWizardPage):
             f"Song: {self.state.artist} — {self.state.song_name}\n"
             f"Alignment: youtu.be/{vid}"
         )
+        self._refresh_ytdlp_row()
 
     def isComplete(self) -> bool:
-        return bool(self.dir_edit.text().strip())
+        if not self.dir_edit.text().strip():
+            return False
+        if self.ytdlp_row.isVisible() and not self.ytdlp_edit.text().strip():
+            return False
+        return True
 
     def validatePage(self) -> bool:
         self.state.output_dir = str(Path(self.dir_edit.text().strip()).expanduser())
         self.state.download_audio = self.download_cb.isChecked()
+        if self.ytdlp_row.isVisible() and self.ytdlp_edit.text().strip():
+            self.state.ytdlp_path = str(Path(self.ytdlp_edit.text().strip()).expanduser())
+        else:
+            self.state.ytdlp_path = "yt-dlp"
         return True
 
 
@@ -683,8 +730,8 @@ class RunPage(QWizardPage):
         self._append(f"Downloading audio via yt-dlp from youtu.be/{vid}…")
         try:
             self._proc = subprocess.Popen(
-                ["yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "0",
-                 "--no-playlist", "--newline",
+                [self.state.ytdlp_path, "-x", "--audio-format", "mp3",
+                 "--audio-quality", "0", "--no-playlist", "--newline",
                  "-o", str(dst.with_suffix(".%(ext)s")), url],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,

@@ -26,20 +26,31 @@ TLDR: **Songsterr URL** -> `notes.chart` + `song.ini` +`song.mp3`
 
 **Fine-tuning (BPM offsets, adding sections, etc.) still belongs in [Moonscraper](https://github.com/FireFox2000000/moonscraper-chart-editor).**
 
-## Setup
+## Install
 
-### Requirements
- * Python ≥ `3.9.6`. 
- * Requires `yt-dlp` on `PATH` if you want audio download.
-    - https://github.com/yt-dlp/yt-dlp
+Two options: download a prebuilt release or run from source.
 
-### Installation
+### Prebuilt releases (recommended)
+
+Grab the latest `Chartster-macos.zip` or `Chartster-windows.zip` from the [Releases page](../../releases), unzip, and launch.
+
+**macOS users:** the build is **unsigned**, so you'll see *"Chartster cannot be opened because the developer cannot be verified"* the first time. Two ways around it:
+1. **Right-click → Open** on `Chartster.app`, then click **Open** in the warning dialog. macOS remembers this choice.
+2. Or run from source (see below) — no signing needed.
+
+**Windows users:** SmartScreen may warn on first launch. Click *More info → Run anyway*.
+
+### From source
+
+Requirements:
+- Python ≥ `3.9.6`
+- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on `PATH` if you want audio download
 
 ```bash
 pip install -e '.[gui]'
 ```
 
-The `[gui]` extra pulls in PySide6.
+The `[gui]` extra pulls in PySide6 (essentials).
 
 ## Usage
 
@@ -59,3 +70,20 @@ python3 -m chartster.gui
 4. Pick a youtube video to sync to
 5. Choose an output folder. 
 6. Import the outputted folder into Clone Hero or Moonscraper!
+
+## Releasing (maintainers)
+
+Tag a commit with `vX.Y.Z` and push the tag — GitHub Actions builds macOS + Windows bundles and attaches them to a new Release automatically.
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The workflow lives in `.github/workflows/release.yml`. To test locally:
+
+```bash
+pip install -e '.[gui,build]'
+pyinstaller Chartster.spec
+# -> dist/Chartster.app (macOS) or dist/Chartster/ (Windows)
+```
