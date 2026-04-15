@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
+from . import config as cfg
 from . import fetch as sfetch
 from . import video_points as vp
 from .chart import TICKS_PER_BEAT, estimate_duration, render
@@ -107,6 +108,7 @@ class State:
     artist: str = ""
     download_audio: bool = True
     ytdlp_path: str = "yt-dlp"
+    ffmpeg_path: str = "ffmpeg"
 
 
 class _Emitter(QObject):
@@ -564,33 +566,44 @@ class OutputPage(QWizardPage):
         self.download_cb.setChecked(True)
         layout.addWidget(self.download_cb)
 
-        self.ytdlp_row = QWidget()
-        yt_row = QHBoxLayout(self.ytdlp_row)
-        yt_row.setContentsMargins(0, 0, 0, 0)
-        self.ytdlp_label = QLabel(
-            'yt-dlp not found on PATH — browse to it '
-            '(<a href="https://github.com/yt-dlp/yt-dlp/releases">download</a>):'
+        self.ytdlp_row, self.ytdlp_edit = self._build_tool_row(
+            layout, "yt-dlp", "/path/to/yt-dlp",
+            "https://github.com/yt-dlp/yt-dlp/releases",
         )
-        self.ytdlp_label.setStyleSheet("color: #c60;")
-        self.ytdlp_label.setTextFormat(Qt.RichText)
-        self.ytdlp_label.setOpenExternalLinks(True)
-        self.ytdlp_edit = QLineEdit()
-        self.ytdlp_edit.setPlaceholderText("/path/to/yt-dlp")
-        self.ytdlp_edit.textChanged.connect(lambda _: self.completeChanged.emit())
-        yt_browse = QPushButton("Browse…")
-        yt_browse.clicked.connect(self._browse_ytdlp)
-        yt_row.addWidget(self.ytdlp_label)
-        yt_row.addWidget(self.ytdlp_edit, 1)
-        yt_row.addWidget(yt_browse)
-        layout.addWidget(self.ytdlp_row)
-        self.ytdlp_row.setVisible(False)
+        self.ffmpeg_row, self.ffmpeg_edit = self._build_tool_row(
+            layout, "ffmpeg", "/path/to/ffmpeg",
+            "https://ffmpeg.org/download.html",
+        )
 
-        self.download_cb.toggled.connect(self._refresh_ytdlp_row)
+        self.download_cb.toggled.connect(self._refresh_tool_rows)
 
         self.info = QLabel("")
         self.info.setWordWrap(True)
         layout.addWidget(self.info)
         layout.addStretch(1)
+
+    def _build_tool_row(self, layout, tool_name: str, placeholder: str, download_url: str):
+        row_w = QWidget()
+        row = QHBoxLayout(row_w)
+        row.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(
+            f'{tool_name} not found on PATH — browse to it '
+            f'(<a href="{download_url}">download</a>):'
+        )
+        lbl.setStyleSheet("color: #c60;")
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setOpenExternalLinks(True)
+        edit = QLineEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.textChanged.connect(lambda _: self.completeChanged.emit())
+        btn = QPushButton("Browse…")
+        btn.clicked.connect(lambda: self._browse_tool(edit, tool_name))
+        row.addWidget(lbl)
+        row.addWidget(edit, 1)
+        row.addWidget(btn)
+        layout.addWidget(row_w)
+        row_w.setVisible(False)
+        return row_w, edit
 
     def _browse(self):
         start = str(Path(self.dir_edit.text()).expanduser()) if self.dir_edit.text() else str(Path.home())
@@ -598,45 +611,69 @@ class OutputPage(QWizardPage):
         if d:
             self.dir_edit.setText(_tildify(d))
 
-    def _browse_ytdlp(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Locate yt-dlp executable", str(Path.home()))
+    def _browse_tool(self, edit: QLineEdit, tool_name: str):
+        f, _ = QFileDialog.getOpenFileName(
+            self, f"Locate {tool_name} executable", str(Path.home()))
         if f:
-            self.ytdlp_edit.setText(_tildify(f))
+            edit.setText(_tildify(f))
 
-    def _refresh_ytdlp_row(self):
+    def _refresh_tool_rows(self):
         want = self.download_cb.isChecked()
-        missing = not _ytdlp_works("yt-dlp")
-        self.ytdlp_row.setVisible(want and missing)
+        ytdlp_missing = not _tool_works(self.ytdlp_edit.text().strip() or "yt-dlp")
+        ffmpeg_missing = not _tool_works(self.ffmpeg_edit.text().strip() or "ffmpeg")
+        self.ytdlp_row.setVisible(want and ytdlp_missing)
+        self.ffmpeg_row.setVisible(want and ffmpeg_missing)
         self.completeChanged.emit()
 
     def initializePage(self) -> None:
+        saved = cfg.load()
+
         default_name = self.state.song_name or f"song-{self.state.song_id}"
         if self.state.artist:
             default_name = f"{self.state.artist} - {default_name}"
         if not self.dir_edit.text():
-            self.dir_edit.setText(_tildify(str(Path.cwd() / "exported" / default_name)))
+            parent = saved.get("export_parent") or str(Path.cwd() / "exported")
+            self.dir_edit.setText(_tildify(str(Path(parent).expanduser() / default_name)))
+
+        if not self.ytdlp_edit.text() and saved.get("ytdlp_path"):
+            self.ytdlp_edit.setText(_tildify(saved["ytdlp_path"]))
+        if not self.ffmpeg_edit.text() and saved.get("ffmpeg_path"):
+            self.ffmpeg_edit.setText(_tildify(saved["ffmpeg_path"]))
+
         a = self.state.alignment
         vid = a.get("videoId") if a else "?"
         self.info.setText(
             f"Song: {self.state.artist} — {self.state.song_name}\n"
             f"Alignment: youtu.be/{vid}"
         )
-        self._refresh_ytdlp_row()
+        self._refresh_tool_rows()
 
     def isComplete(self) -> bool:
         if not self.dir_edit.text().strip():
             return False
         if self.ytdlp_row.isVisible() and not self.ytdlp_edit.text().strip():
             return False
+        if self.ffmpeg_row.isVisible() and not self.ffmpeg_edit.text().strip():
+            return False
         return True
 
     def validatePage(self) -> bool:
-        self.state.output_dir = str(Path(self.dir_edit.text().strip()).expanduser())
+        out_path = Path(self.dir_edit.text().strip()).expanduser()
+        self.state.output_dir = str(out_path)
         self.state.download_audio = self.download_cb.isChecked()
-        if self.ytdlp_row.isVisible() and self.ytdlp_edit.text().strip():
-            self.state.ytdlp_path = str(Path(self.ytdlp_edit.text().strip()).expanduser())
-        else:
-            self.state.ytdlp_path = "yt-dlp"
+        self.state.ytdlp_path = (
+            str(Path(self.ytdlp_edit.text().strip()).expanduser())
+            if self.ytdlp_edit.text().strip() else "yt-dlp"
+        )
+        self.state.ffmpeg_path = (
+            str(Path(self.ffmpeg_edit.text().strip()).expanduser())
+            if self.ffmpeg_edit.text().strip() else "ffmpeg"
+        )
+        cfg.save({
+            "ytdlp_path": self.state.ytdlp_path if self.state.ytdlp_path != "yt-dlp" else "",
+            "ffmpeg_path": self.state.ffmpeg_path if self.state.ffmpeg_path != "ffmpeg" else "",
+            "export_parent": str(out_path.parent),
+        })
         return True
 
 
@@ -735,12 +772,13 @@ class RunPage(QWizardPage):
             )
             if sys.platform == "win32":
                 popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-            self._proc = subprocess.Popen(
-                [self.state.ytdlp_path, "-x", "--audio-format", "mp3",
-                 "--audio-quality", "0", "--no-playlist", "--newline",
-                 "-o", str(dst.with_suffix(".%(ext)s")), url],
-                **popen_kwargs,
-            )
+            cmd = [self.state.ytdlp_path, "-x", "--audio-format", "mp3",
+                   "--audio-quality", "0", "--no-playlist", "--newline",
+                   "-o", str(dst.with_suffix(".%(ext)s"))]
+            if self.state.ffmpeg_path and self.state.ffmpeg_path != "ffmpeg":
+                cmd += ["--ffmpeg-location", self.state.ffmpeg_path]
+            cmd.append(url)
+            self._proc = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError:
             self._append("  yt-dlp not installed — skipping.")
             return self._finish()
@@ -789,15 +827,18 @@ class RunPage(QWizardPage):
         return self._done
 
 
-def _ytdlp_works(path: str) -> bool:
-    """True if `path --version` runs successfully."""
+def _tool_works(path: str) -> bool:
+    """True if `path -version` / `path --version` runs successfully."""
     kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    try:
-        return subprocess.run([path, "--version"], **kwargs).returncode == 0
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return False
+    for flag in ("--version", "-version"):
+        try:
+            if subprocess.run([path, flag], **kwargs).returncode == 0:
+                return True
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return False
+    return False
 
 
 def _tildify(s: str) -> str:

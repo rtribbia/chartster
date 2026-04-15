@@ -11,12 +11,9 @@ Given a Songsterr song URL, this tool:
 4. Downloads the audio via `yt-dlp`,
 5. Writes a ready-to-play Clone Hero song folder (`notes.chart`, `song.ini`, `song.mp3`, `README.txt`).
 
-
 TLDR: **Songsterr URL** -> `notes.chart` + `song.ini` +`song.mp3`
 
 ## What to expect
-
-
 
 - **Only drum charts are supported.** Guitar/bass/vocal tracks are filtered out in the GUI.
 - **Output quality depends on the source tab.** If the Songsterr tab is sparse or inaccurate, the chart will be too. chartster doesn't transcribe audio — it transcribes the tab one-for-one.
@@ -45,6 +42,7 @@ Grab the latest `Chartster-macos.zip` or `Chartster-windows.zip` from the [Relea
 Requirements:
 - Python ≥ `3.9.6`
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on `PATH` if you want audio download
+- [`ffmpeg`](https://ffmpeg.org/download.html) on `PATH` (required by `yt-dlp` for MP3 extraction)
 
 ```bash
 pip install -e '.[gui]'
