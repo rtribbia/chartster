@@ -76,7 +76,7 @@ On first run Chartster writes `chartster-config.ini` next to the executable (or 
 - `[paths]` — last-used locations for `yt-dlp`, `ffmpeg`, and the parent export folder. Updated automatically.
 - `[mappings]` — default lane assignment for every Songsterr drum ID. **Only written once on first launch** — after that, the file is yours. Edit any value to change the default lane Chartster pre-selects for that drum across all songs. The comment block at the top lists every valid drum ID and the allowed lane labels.
 
-You can override any default per-song via the mapping screen without touching the file.
+The mapping screen lets you override defaults for the current run only — those choices are not written back to the config. To change a default permanently, edit `chartster-config.ini` directly.
 
 ## Releasing (maintainers)
 
