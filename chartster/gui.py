@@ -588,6 +588,34 @@ class OutputPage(QWizardPage):
         layout.addWidget(self.info)
         layout.addStretch(1)
 
+        warning = QLabel(
+            "<b style='color:#c60;'>⚠ Heads up:</b> "
+            "Generated charts are transcribed one-for-one from Songsterr tabs "
+            "and may contain errors, missing sections, or timing inaccuracies. "
+            "Always review and fine-tune in Moonscraper before considering a "
+            "chart done."
+        )
+        warning.setTextFormat(Qt.RichText)
+        warning.setWordWrap(True)
+        warning.setMaximumWidth(700)
+        layout.addWidget(warning)
+
+        ack_row = QHBoxLayout()
+        self.ack_cb = QCheckBox()
+        self.ack_cb.toggled.connect(lambda _: self.completeChanged.emit())
+        ack_label = QLabel(
+            "I understand the outputted chart may have inaccuracies. "
+            "It is intended for personal use and I will not blindly share "
+            "it with the community."
+        )
+        ack_label.setStyleSheet("font-weight: bold;")
+        ack_label.setWordWrap(True)
+        ack_label.setMaximumWidth(700)
+        ack_label.mousePressEvent = lambda _e: self.ack_cb.toggle()
+        ack_row.addWidget(self.ack_cb, 0, Qt.AlignTop)
+        ack_row.addWidget(ack_label, 1)
+        layout.addLayout(ack_row)
+
     def _build_tool_row(self, layout, tool_name: str, placeholder: str, download_url: str):
         row_w = QWidget()
         row = QHBoxLayout(row_w)
@@ -660,6 +688,8 @@ class OutputPage(QWizardPage):
         if self.ytdlp_row.isVisible() and not self.ytdlp_edit.text().strip():
             return False
         if self.ffmpeg_row.isVisible() and not self.ffmpeg_edit.text().strip():
+            return False
+        if not self.ack_cb.isChecked():
             return False
         return True
 
