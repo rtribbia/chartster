@@ -745,32 +745,35 @@ class RunPage(QWizardPage):
             self._append("  yt-dlp not installed — skipping.")
             return self._finish()
 
+        import queue
+        self._log_queue: "queue.Queue[str]" = queue.Queue()
+
+        def reader():
+            try:
+                for line in iter(self._proc.stdout.readline, ""):
+                    self._log_queue.put(line)
+            finally:
+                self._log_queue.put("")  # sentinel
+        threading.Thread(target=reader, daemon=True).start()
+
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(150)
         self._poll_timer.timeout.connect(self._poll_download)
         self._poll_timer.start()
 
     def _poll_download(self):
-        import os
-        import select
+        import queue
         proc = self._proc
-        if proc.stdout is not None:
-            fd = proc.stdout.fileno()
+        try:
             while True:
-                r, _, _ = select.select([fd], [], [], 0)
-                if not r:
-                    break
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                self._append("  " + line.rstrip())
+                line = self._log_queue.get_nowait()
+                if line:
+                    self._append("  " + line.rstrip())
+        except queue.Empty:
+            pass
         if proc.poll() is None:
             return
         self._poll_timer.stop()
-        # Drain remainder
-        if proc.stdout is not None:
-            for line in proc.stdout:
-                self._append("  " + line.rstrip())
         if proc.returncode == 0:
             self._append(f"  audio saved to {_tildify(str(self._out_dir / 'song.mp3'))}")
         else:
