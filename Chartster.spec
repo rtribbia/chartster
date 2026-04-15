@@ -33,7 +33,7 @@ excludes = [
 ]
 
 a = Analysis(
-    ["chartster/gui.py"],
+    ["launch_gui.py"],
     pathex=[],
     binaries=[],
     datas=[("chartster/assets", "chartster/assets")],
