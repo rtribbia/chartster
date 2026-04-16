@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
     QWizard,
@@ -42,7 +43,7 @@ from . import fetch as sfetch
 from . import video_points as vp
 from .chart import TICKS_PER_BEAT, estimate_duration, render
 from .mapping import (
-    BLUE, GREEN, LANE_OPTIONS, RED, SONGSTERR_TO_CH, YELLOW, drum_name,
+    BLUE, GREEN, KICK, LANE_OPTIONS, RED, SONGSTERR_TO_CH, YELLOW, drum_name,
 )
 
 if getattr(sys, "frozen", False):
@@ -73,6 +74,8 @@ def _lane_label(lane) -> str:
 def _lane_icon(lane) -> Optional[QIcon]:
     if lane is None:
         return _emoji_icon("🚫")
+    if lane.lane == KICK:
+        return _emoji_icon("👟")
     fname = _LANE_ASSET.get((lane.lane, lane.is_cymbal))
     if not fname:
         return None
@@ -87,6 +90,24 @@ def _lane_icon(lane) -> Optional[QIcon]:
     icon = QIcon(pm)
     _icon_cache[fname] = icon
     return icon
+
+
+class _VCenterDelegate(QStyledItemDelegate):
+    """Force dropdown text to vertically center against the tall icon row,
+    and give every row the same height regardless of whether its icon is a
+    native-size GIF or a rendered-at-40px emoji pixmap.
+    """
+
+    ROW_HEIGHT = 44
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.displayAlignment = Qt.AlignVCenter | Qt.AlignLeft
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        size.setHeight(self.ROW_HEIGHT)
+        return size
 
 
 def _emoji_icon(glyph: str, size: int = 40) -> QIcon:
@@ -417,6 +438,7 @@ class MappingPage(QWizardPage):
                 combo = QComboBox()
                 combo.setIconSize(QSize(40, 40))
                 combo.view().setIconSize(QSize(40, 40))
+                combo.setItemDelegate(_VCenterDelegate(combo))
                 default_lane = SONGSTERR_TO_CH.get(fret)
                 default_idx = 0
                 saved_label = saved_mappings.get(fret)
@@ -426,6 +448,8 @@ class MappingPage(QWizardPage):
                         combo.addItem(icon, name, lane)
                     else:
                         combo.addItem(name, lane)
+                    combo.setItemData(i, Qt.AlignVCenter | Qt.AlignLeft,
+                                      Qt.TextAlignmentRole)
                     if saved_label is None and default_lane is not None \
                             and lane is not None \
                             and lane.lane == default_lane.lane \
