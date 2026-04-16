@@ -125,7 +125,7 @@ def parse_dict(data: dict) -> Song:
                             continue
                         notes.append(Note(
                             fret=n["fret"],
-                            string=float(n["string"]) if "string" in n else None,
+                            string=float(n["string"]) if n.get("string") is not None else None,
                             ghost=bool(n.get("ghost", False)),
                             accent=int(n.get("accentuated", 0)),
                         ))
