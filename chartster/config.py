@@ -71,14 +71,21 @@ def bootstrap_if_missing() -> None:
     """
     if CONFIG_PATH.exists():
         return
-    from .mapping import LANE_OPTIONS, SONGSTERR_TO_CH
+    from .mapping import DRUM_NAMES, LANE_OPTIONS, SONGSTERR_TO_CH
     label_for_lane = {}
     for name, lane in LANE_OPTIONS:
         if lane is not None:
             label_for_lane[(lane.lane, lane.is_cymbal)] = name
     defaults = {}
-    for fret, lane in sorted(SONGSTERR_TO_CH.items()):
-        defaults[str(fret)] = label_for_lane.get((lane.lane, lane.is_cymbal), "— Remove —")
+    # Include every known drum ID — frets without a kit default (metronome,
+    # whistles, scratches) get "— Remove —".
+    for fret in sorted(set(DRUM_NAMES) | set(SONGSTERR_TO_CH)):
+        lane = SONGSTERR_TO_CH.get(fret)
+        if lane is None:
+            defaults[str(fret)] = "— Remove —"
+        else:
+            defaults[str(fret)] = label_for_lane.get(
+                (lane.lane, lane.is_cymbal), "— Remove —")
     _write_section(MAPPINGS_SECTION, defaults, replace=True)
 
 
