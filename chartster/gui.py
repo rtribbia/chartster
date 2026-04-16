@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -175,6 +176,14 @@ class UrlPage(QWizardPage):
         self._fetched = False
         self.status.setText("")
         self.completeChanged.emit()
+
+    def initializePage(self) -> None:
+        # Clear widget state so Finish-as-restart returns a blank URL page.
+        self.url_edit.clear()
+        self.status.clear()
+        self.progress.hide()
+        self._fetched = False
+        self.url_edit.setFocus()
 
     def isComplete(self) -> bool:
         return bool(self.url_edit.text().strip())
@@ -938,6 +947,7 @@ class Wizard(QWizard):
         self.setWindowTitle("Chartster")
         self.setWizardStyle(QWizard.ModernStyle)
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
+        self.setOption(QWizard.NoCancelButton, True)
         self.resize(780, 560)
         self.addPage(UrlPage(self.state))
         self.addPage(TrackPage(self.state))
@@ -945,6 +955,21 @@ class Wizard(QWizard):
         self.addPage(AlignmentPage(self.state))
         self.addPage(OutputPage(self.state))
         self.addPage(RunPage(self.state))
+        self.setButtonText(QWizard.FinishButton, "Chart another")
+
+    def accept(self):
+        # Instead of closing, reset state and restart at page 0 so the user
+        # can chart another song without relaunching.
+        defaults = State()
+        for f in dataclasses.fields(State):
+            setattr(self.state, f.name, getattr(defaults, f.name))
+        # Clear OutputPage widgets that don't get re-derived from state.
+        for p in self.pageIds():
+            page = self.page(p)
+            if isinstance(page, OutputPage):
+                page.dir_edit.clear()
+                page.ack_cb.setChecked(False)
+        self.restart()
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
