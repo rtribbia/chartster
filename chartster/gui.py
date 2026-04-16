@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 import threading
 
 from PySide6.QtCore import QObject, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QCursor, QIcon, QMovie, QPixmap
+from PySide6.QtGui import QCursor, QFont, QIcon, QMovie, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -72,7 +72,7 @@ def _lane_label(lane) -> str:
 
 def _lane_icon(lane) -> Optional[QIcon]:
     if lane is None:
-        return None
+        return _emoji_icon("🚫")
     fname = _LANE_ASSET.get((lane.lane, lane.is_cymbal))
     if not fname:
         return None
@@ -86,6 +86,24 @@ def _lane_icon(lane) -> Optional[QIcon]:
         pm = QPixmap(str(path))
     icon = QIcon(pm)
     _icon_cache[fname] = icon
+    return icon
+
+
+def _emoji_icon(glyph: str, size: int = 40) -> QIcon:
+    key = f"emoji:{glyph}:{size}"
+    if key in _icon_cache:
+        return _icon_cache[key]
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.TextAntialiasing)
+    font = QFont()
+    font.setPixelSize(int(size * 0.8))
+    p.setFont(font)
+    p.drawText(pm.rect(), Qt.AlignCenter, glyph)
+    p.end()
+    icon = QIcon(pm)
+    _icon_cache[key] = icon
     return icon
 
 from .songsterr import parse_dict
