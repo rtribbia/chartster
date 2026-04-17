@@ -8,12 +8,13 @@ import sys
 import traceback
 import dataclasses
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import threading
 
-from PySide6.QtCore import QObject, QPointF, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QPointF, QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import (
     QColor, QCursor, QFont, QIcon, QMovie, QPainter, QPen, QPixmap, QPolygonF,
 )
@@ -414,6 +415,84 @@ def _instrument_icon(lane, border, size: int = 16) -> QIcon:
     return QIcon(pm)
 
 
+class _CollapsibleSection(QWidget):
+    """Header-clickable section whose list of rows can be expanded/collapsed.
+    Self-hides when empty so sections don't leave phantom headers around."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self._expanded = False
+        self._count = 0
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        self._header = QPushButton()
+        self._header.setFlat(True)
+        self._header.setCursor(QCursor(Qt.PointingHandCursor))
+        self._header.setStyleSheet(
+            "text-align:left; font-weight:bold; padding:4px 2px;")
+        self._header.clicked.connect(self._toggle)
+        v.addWidget(self._header)
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(12, 0, 0, 4)
+        self._content_layout.setSpacing(1)
+        self._content.setVisible(False)
+        v.addWidget(self._content)
+        self._refresh_header()
+        self.setVisible(False)
+
+    def _toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._content.setVisible(self._expanded)
+        self._refresh_header()
+
+    def _refresh_header(self) -> None:
+        arrow = "▼" if self._expanded else "▶"
+        self._header.setText(f"{arrow} {self._title} ({self._count})")
+
+    def set_rows(self, rows: list) -> None:
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        for row in rows:
+            self._content_layout.addWidget(row)
+        self._count = len(rows)
+        self._refresh_header()
+        self.setVisible(self._count > 0)
+        if self._count == 0 and self._expanded:
+            self._expanded = False
+            self._content.setVisible(False)
+
+
+def _warning_row(measure_num: int, frets: list, mapping: dict,
+                 borders: dict) -> QWidget:
+    """A single warning-instance row: 'Measure N' text + instrument symbols."""
+    w = QWidget()
+    row = QHBoxLayout(w)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(3)
+    label = QLabel(f"M.{measure_num}")
+    label.setMinimumWidth(44)
+    label.setStyleSheet("color:#aaa;")
+    row.addWidget(label)
+    for fret in frets:
+        lane = mapping.get(fret)
+        if lane is None:
+            continue
+        sym = QLabel()
+        sym.setFixedSize(22, 22)
+        sym.setAlignment(Qt.AlignCenter)
+        sym.setPixmap(_instrument_icon(lane, borders.get(fret)).pixmap(22, 22))
+        sym.setToolTip(drum_name(fret))
+        row.addWidget(sym)
+    row.addStretch(1)
+    return w
+
+
 class ChartPreview(QWidget):
     """Vertical 2D visual preview of the chart.
 
@@ -425,6 +504,7 @@ class ChartPreview(QWidget):
     LANE_WIDTH = 34
     PAD_X = 18
     PAD_Y = 24
+    LABEL_MARGIN = 30   # left gutter for measure numbers
     PX_PER_WHOLE = 200
     NOTE_SIZE = 16
 
@@ -439,6 +519,7 @@ class ChartPreview(QWidget):
     MEASURE_LINE  = QColor("#34373c")
     LANE_GUIDE    = QColor("#24262a")
     NOTE_OUTLINE  = QColor("#0a0b0d")
+    LABEL_COLOR   = QColor("#6a6d72")
 
     _LANE_ORDER = (RED, YELLOW, BLUE, GREEN)
 
@@ -498,10 +579,38 @@ class ChartPreview(QWidget):
                 pos += measure_whole
             self._total_whole = pos
 
+        self._assign_offsets()
         h = int(self._total_whole * self.PX_PER_WHOLE) + 2 * self.PAD_Y
         self.setMinimumHeight(max(200, h))
         self.updateGeometry()
         self.update()
+
+    def _assign_offsets(self) -> None:
+        """Nudge overlapping same-lane hits horizontally so both are visible.
+        Groups hits by (pos, lane, is_cymbal); within a group sorts by fret
+        and spreads each across the lane center with fixed spacing."""
+        groups: dict = {}
+        for pos, _fret, lane, is_cymbal in self._hits:
+            groups.setdefault((pos, lane, is_cymbal), [])
+        # Second pass collects distinct frets per group in stable order.
+        for pos, fret, lane, is_cymbal in self._hits:
+            bucket = groups[(pos, lane, is_cymbal)]
+            if fret not in bucket:
+                bucket.append(fret)
+        for bucket in groups.values():
+            bucket.sort()
+        rewritten = []
+        for pos, fret, lane, is_cymbal in self._hits:
+            frets = groups[(pos, lane, is_cymbal)]
+            n = len(frets)
+            if n <= 1:
+                offset = 0.0
+            else:
+                i = frets.index(fret)
+                spacing = 6.0 if n == 2 else 5.0
+                offset = (i - (n - 1) / 2) * spacing
+            rewritten.append((pos, fret, lane, is_cymbal, offset))
+        self._hits = rewritten
 
     def _emit_hits(self, pos: float, beat) -> None:
         for n in beat.notes:
@@ -534,7 +643,7 @@ class ChartPreview(QWidget):
             # Song start anchored to the widget's bottom; end = bottom - chart_px.
             base_y = bottom
 
-            lanes_inner_left = self.PAD_X
+            lanes_inner_left = self.LABEL_MARGIN
             lanes_inner_right = w - self.PAD_X
             lane_count = len(self._LANE_ORDER)
             inner_w = lanes_inner_right - lanes_inner_left
@@ -547,12 +656,19 @@ class ChartPreview(QWidget):
             for x in lane_x.values():
                 p.drawLine(int(x), int(base_y - chart_px), int(x), int(base_y))
 
-            p.setPen(self.MEASURE_LINE)
-            for m_pos in self._measure_starts:
+            label_font = QFont()
+            label_font.setPointSize(8)
+            for i, m_pos in enumerate(self._measure_starts):
                 y = base_y - m_pos * self.PX_PER_WHOLE
+                p.setPen(self.MEASURE_LINE)
                 p.drawLine(int(lanes_inner_left), int(y),
                            int(lanes_inner_right), int(y))
+                p.setPen(self.LABEL_COLOR)
+                p.setFont(label_font)
+                box = QRect(0, int(y) - 8, int(lanes_inner_left) - 4, 16)
+                p.drawText(box, Qt.AlignRight | Qt.AlignVCenter, str(i + 1))
             end_y = base_y - chart_px
+            p.setPen(self.MEASURE_LINE)
             p.drawLine(int(lanes_inner_left), int(end_y),
                        int(lanes_inner_right), int(end_y))
 
@@ -566,9 +682,9 @@ class ChartPreview(QWidget):
 
             size = self.NOTE_SIZE
             half = size / 2
-            for pos, fret, lane, is_cymbal in self._hits:
+            for pos, fret, lane, is_cymbal, x_offset in self._hits:
                 y = base_y - pos * self.PX_PER_WHOLE
-                x = lane_x[lane]
+                x = lane_x[lane] + x_offset
                 p.setBrush(self.LANE_COLOR[lane])
                 border = self._borders.get(fret)
                 if border is not None:
@@ -628,6 +744,28 @@ class MappingPage(QWizardPage):
         self._preview_scroll.setWidget(self.preview)
         content.addWidget(self._preview_scroll)
 
+        warn_box = QWidget()
+        warn_v = QVBoxLayout(warn_box)
+        warn_v.setContentsMargins(4, 0, 4, 0)
+        warn_v.setSpacing(4)
+        warn_title = QLabel("<b>Mapping warnings</b>")
+        warn_v.addWidget(warn_title)
+        self._warn_empty = QLabel("No issues detected ✓")
+        self._warn_empty.setStyleSheet("color:#7a9;")
+        warn_v.addWidget(self._warn_empty)
+        self._lane_section = _CollapsibleSection(
+            "Simultaneous notes in single lane")
+        self._stack_section = _CollapsibleSection(
+            "3+ non-kick notes at once")
+        warn_v.addWidget(self._lane_section)
+        warn_v.addWidget(self._stack_section)
+        warn_v.addStretch(1)
+        self._warn_scroll = QScrollArea()
+        self._warn_scroll.setWidgetResizable(True)
+        self._warn_scroll.setFixedWidth(240)
+        self._warn_scroll.setWidget(warn_box)
+        content.addWidget(self._warn_scroll)
+
     def initializePage(self) -> None:
         self._loaded = False
         self._combos.clear()
@@ -639,6 +777,9 @@ class MappingPage(QWizardPage):
                 w.deleteLater()
         self.preview.setSong(None)
         self.preview.setMapping({})
+        self._lane_section.set_rows([])
+        self._stack_section.set_rows([])
+        self._warn_empty.setVisible(True)
         self.status.setText("Fetching notes…")
         self.progress.show()
 
@@ -777,6 +918,71 @@ class MappingPage(QWizardPage):
                 continue
             icon = _instrument_icon(lane, borders.get(fret))
             symbol.setPixmap(icon.pixmap(22, 22))
+        self._refresh_warnings(mapping, borders)
+
+    def _collect_warnings(self, mapping: dict):
+        """Walk the song once grouping mapped hits by (measure, position).
+        Returns (lane_collisions, stacking) where each is a list of
+        (measure_number_1based, [fret, fret, …]) tuples."""
+        song = self.state.song
+        if song is None:
+            return [], []
+        by_tick: dict = {}  # (m_idx, Fraction pos) -> {fret: Lane}
+        for m_idx, measure in enumerate(song.measures):
+            for voice in measure.voices:
+                voice_pos = Fraction(0)
+                grace_buf: list = []
+                for beat in voice.beats:
+                    if beat.grace:
+                        grace_buf.append(beat)
+                        continue
+                    trailing = Fraction(0)
+                    for i in range(len(grace_buf) - 1, -1, -1):
+                        trailing += grace_buf[i].duration
+                        g = grace_buf[i]
+                        g_pos = max(Fraction(0), voice_pos - trailing)
+                        if not g.rest:
+                            bucket = by_tick.setdefault((m_idx, g_pos), {})
+                            for n in g.notes:
+                                lane = mapping.get(n.fret)
+                                if lane is not None:
+                                    bucket[n.fret] = lane
+                    grace_buf.clear()
+                    if not beat.rest:
+                        bucket = by_tick.setdefault((m_idx, voice_pos), {})
+                        for n in beat.notes:
+                            lane = mapping.get(n.fret)
+                            if lane is not None:
+                                bucket[n.fret] = lane
+                    voice_pos += beat.duration
+
+        lane_collisions: list = []
+        stacking: list = []
+        for (m_idx, _), fret_to_lane in sorted(by_tick.items()):
+            by_lane: dict = {}
+            for fret, lane in fret_to_lane.items():
+                by_lane.setdefault((lane.lane, lane.is_cymbal), []).append(fret)
+            for frets in by_lane.values():
+                if len(frets) >= 2:
+                    lane_collisions.append((m_idx + 1, frets))
+            non_kick = [f for f, lane in fret_to_lane.items()
+                        if lane.lane != KICK]
+            if len(non_kick) >= 3:
+                stacking.append((m_idx + 1, non_kick))
+        return lane_collisions, stacking
+
+    def _refresh_warnings(self, mapping: dict, borders: dict) -> None:
+        lane_collisions, stacking = self._collect_warnings(mapping)
+        self._lane_section.set_rows([
+            _warning_row(m, frets, mapping, borders)
+            for m, frets in lane_collisions
+        ])
+        self._stack_section.set_rows([
+            _warning_row(m, frets, mapping, borders)
+            for m, frets in stacking
+        ])
+        self._warn_empty.setVisible(
+            not lane_collisions and not stacking)
 
     def _scroll_preview_to_start(self) -> None:
         bar = self._preview_scroll.verticalScrollBar()
@@ -1291,7 +1497,7 @@ class Wizard(QWizard):
         self.setWizardStyle(QWizard.ModernStyle)
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
         self.setOption(QWizard.NoCancelButton, True)
-        self.resize(780, 560)
+        self.resize(1040, 620)
         self.addPage(UrlPage(self.state))
         self.addPage(TrackPage(self.state))
         self.addPage(MappingPage(self.state))
