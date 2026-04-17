@@ -2,7 +2,7 @@
 
 Convert [Songsterr](https://www.songsterr.com) drum tabs into [Clone Hero](https://clonehero.net) expert drum charts, automatically aligned to a YouTube audio track.
 
-https://github.com/user-attachments/assets/79cd8d56-b1f6-4324-81bd-e133c5e96079
+https://github.com/user-attachments/assets/acdc7344-43a9-4fd8-9fef-3fbd0b7c1c34
 
 Given a Songsterr song URL, this tool:
 1. Fetches the tab JSON
