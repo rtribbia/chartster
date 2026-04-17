@@ -13,8 +13,10 @@ from typing import Any, Callable, Optional
 
 import threading
 
-from PySide6.QtCore import QObject, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QCursor, QFont, QIcon, QMovie, QPainter, QPixmap
+from PySide6.QtCore import QObject, QPointF, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import (
+    QColor, QCursor, QFont, QIcon, QMovie, QPainter, QPen, QPixmap, QPolygonF,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -358,12 +360,241 @@ class TrackPage(QWizardPage):
         return True
 
 
+# Border palette — extra drums that pile onto the same CH lane get a
+# distinguishing border from this list (in order). Entry 0 is `None` meaning
+# "default outline" so the first drum on any given lane looks plain.
+_BORDER_PALETTE: list = [
+    None,
+    QColor("#ff2d95"),   # magenta
+    QColor("#00d9d9"),   # cyan
+    QColor("#ffffff"),   # white
+    QColor("#bf6eff"),   # purple
+    QColor("#ff8800"),   # bright orange
+    QColor("#e84b3a"),   # red
+    QColor("#2d82d5"),   # blue
+    QColor("#3aab3a"),   # green
+]
+
+
+def _instrument_icon(lane, border, size: int = 16) -> QIcon:
+    """Render the per-hit preview shape (pad/cymbal/kick) into a small icon
+    matching the preview's NOTE_SIZE, with an optional colored border."""
+    pad = 3
+    dim = size + pad * 2
+    pm = QPixmap(dim, dim)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    try:
+        p.setRenderHint(QPainter.Antialiasing)
+        cx = dim / 2
+        cy = dim / 2
+        half = size / 2
+        if lane.lane == KICK:
+            color = border if border is not None else ChartPreview.KICK_COLOR
+            p.setPen(QPen(color, 2))
+            p.drawLine(int(cx - half), int(cy),
+                       int(cx + half), int(cy))
+        else:
+            p.setBrush(ChartPreview.LANE_COLOR[lane.lane])
+            if border is not None:
+                p.setPen(QPen(border, 2))
+            else:
+                p.setPen(QPen(ChartPreview.NOTE_OUTLINE, 1))
+            if lane.is_cymbal:
+                tri = QPolygonF([
+                    QPointF(cx, cy - half),
+                    QPointF(cx - half, cy + half),
+                    QPointF(cx + half, cy + half),
+                ])
+                p.drawPolygon(tri)
+            else:
+                p.drawRect(int(cx - half), int(cy - half), size, size)
+    finally:
+        p.end()
+    return QIcon(pm)
+
+
+class ChartPreview(QWidget):
+    """Vertical 2D visual preview of the chart.
+
+    Song start at the bottom, end at the top. Pads = squares, cymbals =
+    upward triangles, kicks = full-width yellow line. Height is proportional
+    to note durations (pixels-per-whole-note) so dense passages look dense.
+    """
+
+    LANE_WIDTH = 34
+    PAD_X = 18
+    PAD_Y = 24
+    PX_PER_WHOLE = 200
+    NOTE_SIZE = 16
+
+    LANE_COLOR = {
+        RED:    QColor("#e84b3a"),
+        YELLOW: QColor("#f5c518"),
+        BLUE:   QColor("#2d82d5"),
+        GREEN:  QColor("#3aab3a"),
+    }
+    KICK_COLOR    = QColor("#e6a017")
+    BG_COLOR      = QColor("#17191c")
+    MEASURE_LINE  = QColor("#34373c")
+    LANE_GUIDE    = QColor("#24262a")
+    NOTE_OUTLINE  = QColor("#0a0b0d")
+
+    _LANE_ORDER = (RED, YELLOW, BLUE, GREEN)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.song = None
+        self.mapping: dict = {}
+        self._borders: dict = {}           # fret -> QColor or None
+        self._hits: list = []              # (pos_whole, fret, lane, is_cymbal)
+        self._kicks: list = []             # (pos_whole, fret)
+        self._measure_starts: list = []
+        self._total_whole: float = 0.0
+        self.setAutoFillBackground(False)
+        self.setMinimumWidth(len(self._LANE_ORDER) * self.LANE_WIDTH
+                             + 2 * self.PAD_X)
+
+    def setSong(self, song) -> None:
+        self.song = song
+        self._rebuild()
+
+    def setMapping(self, mapping: dict) -> None:
+        self.mapping = mapping
+        self._rebuild()
+
+    def setBorders(self, borders: dict) -> None:
+        self._borders = borders
+        self.update()
+
+    def _rebuild(self) -> None:
+        self._hits.clear()
+        self._kicks.clear()
+        self._measure_starts.clear()
+        self._total_whole = 0.0
+        if self.song is not None:
+            pos = 0.0
+            for measure in self.song.measures:
+                self._measure_starts.append(pos)
+                measure_whole = measure.signature[0] / measure.signature[1]
+                for voice in measure.voices:
+                    voice_pos = pos
+                    grace_buf: list = []
+                    for beat in voice.beats:
+                        if beat.grace:
+                            grace_buf.append(beat)
+                            continue
+                        trailing = 0.0
+                        for i in range(len(grace_buf) - 1, -1, -1):
+                            trailing += float(grace_buf[i].duration)
+                            g = grace_buf[i]
+                            g_pos = max(pos, voice_pos - trailing)
+                            if not g.rest:
+                                self._emit_hits(g_pos, g)
+                        grace_buf.clear()
+                        if not beat.rest:
+                            self._emit_hits(voice_pos, beat)
+                        voice_pos += float(beat.duration)
+                pos += measure_whole
+            self._total_whole = pos
+
+        h = int(self._total_whole * self.PX_PER_WHOLE) + 2 * self.PAD_Y
+        self.setMinimumHeight(max(200, h))
+        self.updateGeometry()
+        self.update()
+
+    def _emit_hits(self, pos: float, beat) -> None:
+        for n in beat.notes:
+            lane = self.mapping.get(n.fret)
+            if lane is None:
+                continue
+            if lane.lane == KICK:
+                self._kicks.append((pos, n.fret))
+            else:
+                self._hits.append((pos, n.fret, lane.lane, lane.is_cymbal))
+
+    def sizeHint(self):
+        h = int(self._total_whole * self.PX_PER_WHOLE) + 2 * self.PAD_Y
+        w = len(self._LANE_ORDER) * self.LANE_WIDTH + 2 * self.PAD_X
+        return QSize(w, max(200, h))
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing)
+            p.fillRect(self.rect(), self.BG_COLOR)
+            if self.song is None:
+                return
+
+            w = self.width()
+            h = self.height()
+            top = self.PAD_Y
+            bottom = h - self.PAD_Y
+            chart_px = self._total_whole * self.PX_PER_WHOLE
+            # Song start anchored to the widget's bottom; end = bottom - chart_px.
+            base_y = bottom
+
+            lanes_inner_left = self.PAD_X
+            lanes_inner_right = w - self.PAD_X
+            lane_count = len(self._LANE_ORDER)
+            inner_w = lanes_inner_right - lanes_inner_left
+            lane_x = {
+                lane: lanes_inner_left + (i + 0.5) * inner_w / lane_count
+                for i, lane in enumerate(self._LANE_ORDER)
+            }
+
+            p.setPen(self.LANE_GUIDE)
+            for x in lane_x.values():
+                p.drawLine(int(x), int(base_y - chart_px), int(x), int(base_y))
+
+            p.setPen(self.MEASURE_LINE)
+            for m_pos in self._measure_starts:
+                y = base_y - m_pos * self.PX_PER_WHOLE
+                p.drawLine(int(lanes_inner_left), int(y),
+                           int(lanes_inner_right), int(y))
+            end_y = base_y - chart_px
+            p.drawLine(int(lanes_inner_left), int(end_y),
+                       int(lanes_inner_right), int(end_y))
+
+            for pos, fret in self._kicks:
+                border = self._borders.get(fret)
+                color = border if border is not None else self.KICK_COLOR
+                p.setPen(QPen(color, 2))
+                y = base_y - pos * self.PX_PER_WHOLE
+                p.drawLine(int(lanes_inner_left), int(y),
+                           int(lanes_inner_right), int(y))
+
+            size = self.NOTE_SIZE
+            half = size / 2
+            for pos, fret, lane, is_cymbal in self._hits:
+                y = base_y - pos * self.PX_PER_WHOLE
+                x = lane_x[lane]
+                p.setBrush(self.LANE_COLOR[lane])
+                border = self._borders.get(fret)
+                if border is not None:
+                    p.setPen(QPen(border, 2))
+                else:
+                    p.setPen(QPen(self.NOTE_OUTLINE, 1))
+                if is_cymbal:
+                    tri = QPolygonF([
+                        QPointF(x, y - half),
+                        QPointF(x - half, y + half),
+                        QPointF(x + half, y + half),
+                    ])
+                    p.drawPolygon(tri)
+                else:
+                    p.drawRect(int(x - half), int(y - half), size, size)
+        finally:
+            p.end()
+
+
 class MappingPage(QWizardPage):
     def __init__(self, state: State):
         super().__init__()
         self.state = state
         self._loaded = False
         self._combos: list[tuple[int, QComboBox]] = []
+        self._symbols: dict[int, QLabel] = {}
         self.setTitle("Map drums to Clone Hero pads")
         self.setSubTitle("Each drum in this track is auto-mapped to a CH pad. "
                          "Override any row, or pick \"— Remove —\" to drop it.")
@@ -375,24 +606,39 @@ class MappingPage(QWizardPage):
         self.progress.setRange(0, 0)
         outer.addWidget(self.progress)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        content = QHBoxLayout()
+        content.setSpacing(8)
+        outer.addLayout(content, 1)
+
+        map_scroll = QScrollArea()
+        map_scroll.setWidgetResizable(True)
         self._container = QWidget()
         self._grid = QVBoxLayout(self._container)
         self._grid.setContentsMargins(2, 2, 2, 2)
         self._grid.setSpacing(2)
         self._grid.addStretch(1)
-        scroll.setWidget(self._container)
-        outer.addWidget(scroll, 1)
+        map_scroll.setWidget(self._container)
+        content.addWidget(map_scroll, 1)
+
+        self.preview = ChartPreview()
+        self._preview_scroll = QScrollArea()
+        self._preview_scroll.setWidgetResizable(True)
+        self._preview_scroll.setFixedWidth(220)
+        self._preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._preview_scroll.setWidget(self.preview)
+        content.addWidget(self._preview_scroll)
 
     def initializePage(self) -> None:
         self._loaded = False
         self._combos.clear()
+        self._symbols.clear()
         while self._grid.count() > 1:
             item = self._grid.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+        self.preview.setSong(None)
+        self.preview.setMapping({})
         self.status.setText("Fetching notes…")
         self.progress.show()
 
@@ -434,11 +680,13 @@ class MappingPage(QWizardPage):
                     f"  <span style='color:#888'>({n} notes · {nps:.1f}/s)</span>"
                 )
                 label.setTextFormat(Qt.RichText)
-                label.setMinimumWidth(260)
+                label.setMinimumWidth(220)
+                label.setWordWrap(True)
                 combo = QComboBox()
                 combo.setIconSize(QSize(40, 40))
                 combo.view().setIconSize(QSize(40, 40))
                 combo.setItemDelegate(_VCenterDelegate(combo))
+                combo.setFixedWidth(192)
                 default_lane = SONGSTERR_TO_CH.get(fret)
                 default_idx = 0
                 saved_label = saved_mappings.get(fret)
@@ -461,12 +709,23 @@ class MappingPage(QWizardPage):
                     # Unknown fret → default to Remove
                     default_idx = len(LANE_OPTIONS) - 1
                 combo.setCurrentIndex(default_idx)
+                combo.currentIndexChanged.connect(
+                    lambda _=None: self._update_preview())
+                symbol = QLabel()
+                symbol.setFixedSize(22, 22)
+                symbol.setAlignment(Qt.AlignCenter)
+                row.addWidget(symbol)
                 row.addWidget(label)
-                row.addWidget(combo, 1)
+                row.addWidget(combo)
+                row.addStretch(1)
                 holder = QWidget()
                 holder.setLayout(row)
                 self._grid.insertWidget(self._grid.count() - 1, holder)
                 self._combos.append((fret, combo))
+                self._symbols[fret] = symbol
+            self.preview.setSong(song)
+            self._update_preview()
+            QTimer.singleShot(0, self._scroll_preview_to_start)
             self._loaded = True
             self.completeChanged.emit()
 
@@ -476,16 +735,58 @@ class MappingPage(QWizardPage):
 
         self._emitter = run_async(self, work, on_done, on_failed)
 
-    def isComplete(self) -> bool:
-        return self._loaded
-
-    def validatePage(self) -> bool:
+    def _current_mapping(self) -> dict:
         mapping = {}
         for fret, combo in self._combos:
             lane = combo.currentData()
             if lane is not None:
                 mapping[fret] = lane
-        self.state.mapping = mapping
+        return mapping
+
+    def _compute_borders(self, mapping: dict) -> dict:
+        """Walk frets in note-count order; extra drums on the same CH lane
+        cycle through _BORDER_PALETTE so the preview can tell them apart.
+        Filters palette entries matching the lane's own fill color so the
+        border never blends into the shape."""
+        borders: dict = {}
+        lane_counts: dict = {}
+        for fret, _ in self._combos:
+            lane = mapping.get(fret)
+            if lane is None:
+                continue
+            key = (lane.lane, lane.is_cymbal)
+            idx = lane_counts.get(key, 0)
+            lane_counts[key] = idx + 1
+            own_fill = (ChartPreview.KICK_COLOR if lane.lane == KICK
+                        else ChartPreview.LANE_COLOR[lane.lane])
+            own_rgb = own_fill.rgb()
+            palette = [c for c in _BORDER_PALETTE
+                       if c is None or c.rgb() != own_rgb]
+            borders[fret] = palette[idx % len(palette)]
+        return borders
+
+    def _update_preview(self) -> None:
+        mapping = self._current_mapping()
+        borders = self._compute_borders(mapping)
+        self.preview.setBorders(borders)
+        self.preview.setMapping(mapping)
+        for fret, symbol in self._symbols.items():
+            lane = mapping.get(fret)
+            if lane is None:
+                symbol.clear()
+                continue
+            icon = _instrument_icon(lane, borders.get(fret))
+            symbol.setPixmap(icon.pixmap(22, 22))
+
+    def _scroll_preview_to_start(self) -> None:
+        bar = self._preview_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def isComplete(self) -> bool:
+        return self._loaded
+
+    def validatePage(self) -> bool:
+        self.state.mapping = self._current_mapping()
         return True
 
 
