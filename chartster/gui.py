@@ -734,7 +734,8 @@ class MappingPage(QWizardPage):
         self._grid.setSpacing(2)
         self._grid.addStretch(1)
         map_scroll.setWidget(self._container)
-        content.addWidget(map_scroll, 1)
+        map_scroll.setFixedWidth(470)
+        content.addWidget(map_scroll)
 
         self.preview = ChartPreview()
         self._preview_scroll = QScrollArea()
@@ -762,9 +763,9 @@ class MappingPage(QWizardPage):
         warn_v.addStretch(1)
         self._warn_scroll = QScrollArea()
         self._warn_scroll.setWidgetResizable(True)
-        self._warn_scroll.setFixedWidth(240)
+        self._warn_scroll.setMinimumWidth(240)
         self._warn_scroll.setWidget(warn_box)
-        content.addWidget(self._warn_scroll)
+        content.addWidget(self._warn_scroll, 1)
 
     def initializePage(self) -> None:
         self._loaded = False
@@ -1168,10 +1169,11 @@ class OutputPage(QWizardPage):
         )
         ack_label.setStyleSheet("font-weight: bold;")
         ack_label.setWordWrap(True)
-        ack_label.setMaximumWidth(700)
+        ack_label.setFixedWidth(680)
         ack_label.mousePressEvent = lambda _e: self.ack_cb.toggle()
         ack_row.addWidget(self.ack_cb, 0, Qt.AlignTop)
-        ack_row.addWidget(ack_label, 1)
+        ack_row.addWidget(ack_label)
+        ack_row.addStretch(1)
         layout.addLayout(ack_row)
 
     def _build_tool_row(self, layout, tool_name: str, placeholder: str, download_url: str):
