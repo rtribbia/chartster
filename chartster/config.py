@@ -6,7 +6,9 @@ Chartster.exe), else in the current working directory.
 from __future__ import annotations
 
 import configparser
+import json
 import sys
+from datetime import date
 from pathlib import Path
 
 
@@ -23,8 +25,46 @@ def _config_dir() -> Path:
 
 
 CONFIG_PATH = _config_dir() / "chartster-config.ini"
+HISTORY_PATH = _config_dir() / "chartster-history.log"
 SECTION = "paths"
 MAPPINGS_SECTION = "mappings"
+
+
+def log_history(artist: str, title: str, url: str) -> None:
+    """Append one JSON-line entry to the chart history log."""
+    entry = {
+        "date": date.today().isoformat(),
+        "artist": artist or "",
+        "title": title or "",
+        "url": url or "",
+    }
+    try:
+        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(HISTORY_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+def load_history() -> list[dict]:
+    """Return history entries newest-first (by insertion order, reversed)."""
+    if not HISTORY_PATH.exists():
+        return []
+    entries: list[dict] = []
+    try:
+        with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        return []
+    entries.reverse()
+    return entries
 
 
 def load() -> dict:

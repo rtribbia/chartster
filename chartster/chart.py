@@ -313,6 +313,24 @@ def _write_expert_drums(
         if sum(1 for l in lanes if l != 0) > 2
     )
 
+    # Collapse colliding hits on the same (tick, lane): cymbal > tom, then
+    # lowest fret number as deterministic tiebreak. Keeps the .chart output
+    # unambiguous and matches the "(winner)" callout in the mapping UI.
+    dedup: Dict[Tuple[int, int], Hit] = {}
+    for h in hits:
+        lane = mapping[h.fret]
+        key = (h.tick, lane.lane)
+        existing = dedup.get(key)
+        if existing is None:
+            dedup[key] = h
+            continue
+        existing_lane = mapping[existing.fret]
+        if lane.is_cymbal and not existing_lane.is_cymbal:
+            dedup[key] = h
+        elif lane.is_cymbal == existing_lane.is_cymbal and h.fret < existing.fret:
+            dedup[key] = h
+    hits = sorted(dedup.values(), key=lambda h: (h.tick, h.fret))
+
     for h in hits:
         ch = mapping[h.fret]
         lines.append(f"  {h.tick} = N {ch.lane} 0")

@@ -27,10 +27,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QButtonGroup,
+    QHeaderView,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QProgressBar,
     QPushButton,
     QRadioButton,
@@ -143,6 +147,21 @@ def _lane_icon(lane) -> Optional[QIcon]:
     icon = QIcon(pm)
     _icon_cache[fname] = icon
     return icon
+
+
+class _SortableItem(QTableWidgetItem):
+    """QTableWidgetItem whose < comparison uses a hidden sort key (e.g. an
+    ISO date) instead of the displayed text."""
+
+    def __init__(self, display: str, sort_key: str):
+        super().__init__(display)
+        self._sort_key = sort_key
+
+    def __lt__(self, other: "QTableWidgetItem") -> bool:
+        other_key = getattr(other, "_sort_key", None)
+        if other_key is None:
+            return super().__lt__(other)
+        return self._sort_key < other_key
 
 
 class _VCenterDelegate(QStyledItemDelegate):
@@ -264,7 +283,34 @@ class UrlPage(QWizardPage):
         self.progress.setRange(0, 0)  # indeterminate
         self.progress.hide()
         layout.addWidget(self.progress)
-        layout.addStretch(1)
+
+        self.history_label = QLabel("")
+        self.history_label.setStyleSheet("color: #888;")
+        layout.addWidget(self.history_label)
+        self.history_table = QTableWidget(0, 4)
+        self.history_table.setHorizontalHeaderLabels(
+            ["Date", "Artist", "Song", "URL"])
+        self.history_table.verticalHeader().setVisible(False)
+        self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.history_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.history_table.setSortingEnabled(True)
+        self.history_table.setTextElideMode(Qt.ElideRight)
+        self.history_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.history_table.setWordWrap(False)
+        header = self.history_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setStretchLastSection(True)
+        self.history_table.itemClicked.connect(self._on_history_click)
+        layout.addWidget(self.history_table, 1)
+        self._bottom_spacer = QWidget()
+        self._bottom_spacer.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Expanding)
+        layout.addWidget(self._bottom_spacer, 1)
+        self._refresh_history()
 
     def _on_changed(self, *_):
         self._fetched = False
@@ -278,6 +324,50 @@ class UrlPage(QWizardPage):
         self.progress.hide()
         self._fetched = False
         self.url_edit.setFocus()
+        self._refresh_history()
+
+    def _refresh_history(self) -> None:
+        entries = cfg.load_history()
+        self.history_table.setSortingEnabled(False)
+        self.history_table.clearContents()
+        self.history_table.setRowCount(0)
+        if not entries:
+            self.history_label.setText("No chart history yet.")
+            self.history_table.setVisible(False)
+            self._bottom_spacer.setVisible(True)
+            self.history_table.setSortingEnabled(True)
+            return
+        self.history_table.setVisible(True)
+        self._bottom_spacer.setVisible(False)
+        self.history_label.setText(
+            f"Recent charts ({len(entries)}):")
+        self.history_table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            iso = entry.get("date", "") or ""
+            try:
+                y, m, d = iso.split("-")
+                pretty_date = f"{int(m):02d}/{int(d):02d}/{y}"
+            except Exception:
+                pretty_date = iso
+            url = entry.get("url", "")
+            date_item = _SortableItem(pretty_date, iso)
+            artist_item = QTableWidgetItem(entry.get("artist", ""))
+            title_item = QTableWidgetItem(entry.get("title", ""))
+            url_item = QTableWidgetItem(url)
+            for it in (date_item, artist_item, title_item, url_item):
+                it.setData(Qt.UserRole, url)
+                it.setToolTip(url)
+            self.history_table.setItem(row, 0, date_item)
+            self.history_table.setItem(row, 1, artist_item)
+            self.history_table.setItem(row, 2, title_item)
+            self.history_table.setItem(row, 3, url_item)
+        self.history_table.setSortingEnabled(True)
+        self.history_table.sortByColumn(0, Qt.DescendingOrder)
+
+    def _on_history_click(self, item: QTableWidgetItem) -> None:
+        url = item.data(Qt.UserRole) or ""
+        if url:
+            self.url_edit.setText(url)
 
     def isComplete(self) -> bool:
         return bool(self.url_edit.text().strip())
@@ -521,8 +611,9 @@ class _CollapsibleSection(QWidget):
 
 
 def _warning_row(measure_num: int, frets: list, mapping: dict,
-                 borders: dict) -> QWidget:
-    """A single warning-instance row: 'Measure N' text + instrument symbols."""
+                 borders: dict, winner: Optional[int] = None) -> QWidget:
+    """A single warning-instance row: 'Measure N' text + instrument symbols,
+    optionally followed by '(<winner-symbol> wins)'."""
     w = QWidget()
     row = QHBoxLayout(w)
     row.setContentsMargins(0, 0, 0, 0)
@@ -541,6 +632,20 @@ def _warning_row(measure_num: int, frets: list, mapping: dict,
         sym.setPixmap(_instrument_icon(lane, borders.get(fret)).pixmap(22, 22))
         sym.setToolTip(drum_name(fret))
         row.addWidget(sym)
+    if winner is not None and mapping.get(winner) is not None:
+        open_p = QLabel("(")
+        open_p.setStyleSheet("color:#aaa;")
+        row.addWidget(open_p)
+        w_sym = QLabel()
+        w_sym.setFixedSize(22, 22)
+        w_sym.setAlignment(Qt.AlignCenter)
+        w_sym.setPixmap(_instrument_icon(
+            mapping[winner], borders.get(winner)).pixmap(22, 22))
+        w_sym.setToolTip(drum_name(winner))
+        row.addWidget(w_sym)
+        wins = QLabel("wins)")
+        wins.setStyleSheet("color:#aaa;")
+        row.addWidget(wins)
     row.addStretch(1)
     return w
 
@@ -806,11 +911,17 @@ class MappingPage(QWizardPage):
         self._warn_empty = QLabel("No issues detected ✓")
         self._warn_empty.setStyleSheet("color:#7a9;")
         warn_v.addWidget(self._warn_empty)
-        self._lane_section = _CollapsibleSection(
-            "Simultaneous notes in single lane")
+        self._tom_tom_section = _CollapsibleSection(
+            "Note collision - tom/tom")
+        self._cymbal_cymbal_section = _CollapsibleSection(
+            "Note collision - cymbal/cymbal")
+        self._tom_cymbal_section = _CollapsibleSection(
+            "Note collision - tom/cymbal")
         self._stack_section = _CollapsibleSection(
             "3+ non-kick notes at once")
-        warn_v.addWidget(self._lane_section)
+        warn_v.addWidget(self._tom_tom_section)
+        warn_v.addWidget(self._cymbal_cymbal_section)
+        warn_v.addWidget(self._tom_cymbal_section)
         warn_v.addWidget(self._stack_section)
         warn_v.addStretch(1)
         self._warn_scroll = QScrollArea()
@@ -830,7 +941,9 @@ class MappingPage(QWizardPage):
                 w.deleteLater()
         self.preview.setSong(None)
         self.preview.setMapping({})
-        self._lane_section.set_rows([])
+        self._tom_tom_section.set_rows([])
+        self._cymbal_cymbal_section.set_rows([])
+        self._tom_cymbal_section.set_rows([])
         self._stack_section.set_rows([])
         self._warn_empty.setVisible(True)
         self.status.setText("Fetching notes…")
@@ -975,11 +1088,13 @@ class MappingPage(QWizardPage):
 
     def _collect_warnings(self, mapping: dict):
         """Walk the song once grouping mapped hits by (measure, position).
-        Returns (lane_collisions, stacking) where each is a list of
-        (measure_number_1based, [fret, fret, …]) tuples."""
+        Returns (tom_tom, cymbal_cymbal, tom_cymbal, stacking). The collision
+        lists contain (measure_number_1based, [frets…], winner_fret) tuples
+        where the winner is the fret whose note survives in the chart output
+        (cymbal > tom; lowest fret number among ties)."""
         song = self.state.song
         if song is None:
-            return [], []
+            return [], [], [], []
         by_tick: dict = {}  # (m_idx, Fraction pos) -> {fret: Lane}
         for m_idx, measure in enumerate(song.measures):
             for voice in measure.voices:
@@ -1009,33 +1124,59 @@ class MappingPage(QWizardPage):
                                 bucket[n.fret] = lane
                     voice_pos += beat.duration
 
-        lane_collisions: list = []
+        tom_tom: list = []
+        cymbal_cymbal: list = []
+        tom_cymbal: list = []
         stacking: list = []
         for (m_idx, _), fret_to_lane in sorted(by_tick.items()):
-            by_lane: dict = {}
+            by_lane_kind: dict = {}
+            by_lane_only: dict = {}
             for fret, lane in fret_to_lane.items():
-                by_lane.setdefault((lane.lane, lane.is_cymbal), []).append(fret)
-            for frets in by_lane.values():
+                if lane.lane == KICK:
+                    continue
+                by_lane_kind.setdefault(
+                    (lane.lane, lane.is_cymbal), []).append(fret)
+                by_lane_only.setdefault(lane.lane, set()).add(lane.is_cymbal)
+            for (lane_int, is_cymbal), frets in by_lane_kind.items():
                 if len(frets) >= 2:
-                    lane_collisions.append((m_idx + 1, frets))
+                    entry = (m_idx + 1, sorted(frets), min(frets))
+                    (cymbal_cymbal if is_cymbal else tom_tom).append(entry)
+            for lane_int, kinds in by_lane_only.items():
+                if len(kinds) == 2:
+                    frets = [f for f, lane in fret_to_lane.items()
+                             if lane.lane == lane_int]
+                    cymbal_frets = [f for f in frets
+                                    if fret_to_lane[f].is_cymbal]
+                    winner = min(cymbal_frets)
+                    tom_cymbal.append((m_idx + 1, sorted(frets), winner))
             non_kick = [f for f, lane in fret_to_lane.items()
                         if lane.lane != KICK]
             if len(non_kick) >= 3:
-                stacking.append((m_idx + 1, non_kick))
-        return lane_collisions, stacking
+                stacking.append((m_idx + 1, sorted(non_kick)))
+        return tom_tom, cymbal_cymbal, tom_cymbal, stacking
 
     def _refresh_warnings(self, mapping: dict, borders: dict) -> None:
-        lane_collisions, stacking = self._collect_warnings(mapping)
-        self._lane_section.set_rows([
-            _warning_row(m, frets, mapping, borders)
-            for m, frets in lane_collisions
+        tom_tom, cymbal_cymbal, tom_cymbal, stacking = \
+            self._collect_warnings(mapping)
+        self._tom_tom_section.set_rows([
+            _warning_row(m, frets, mapping, borders, winner=w)
+            for m, frets, w in tom_tom
+        ])
+        self._cymbal_cymbal_section.set_rows([
+            _warning_row(m, frets, mapping, borders, winner=w)
+            for m, frets, w in cymbal_cymbal
+        ])
+        self._tom_cymbal_section.set_rows([
+            _warning_row(m, frets, mapping, borders, winner=w)
+            for m, frets, w in tom_cymbal
         ])
         self._stack_section.set_rows([
             _warning_row(m, frets, mapping, borders)
             for m, frets in stacking
         ])
         self._warn_empty.setVisible(
-            not lane_collisions and not stacking)
+            not tom_tom and not cymbal_cymbal
+            and not tom_cymbal and not stacking)
 
     def _scroll_preview_to_start(self) -> None:
         bar = self._preview_scroll.verticalScrollBar()
@@ -1089,18 +1230,26 @@ class DynamicsPage(QWizardPage):
                          "Unchecked combos become normal notes.")
         outer = QVBoxLayout(self)
 
+        self._empty_label = QLabel(
+            "No ghost or accent notes were detected in the mapped track.")
+        self._empty_label.setStyleSheet("color: #888;")
+        self._empty_label.setVisible(False)
+        outer.addWidget(self._empty_label)
+
         self.enable_cb = QCheckBox(
             "Enable chart dynamics in Clone Hero")
         self.enable_cb.setChecked(True)
         self.enable_cb.setStyleSheet("font-weight: bold;")
         outer.addWidget(self.enable_cb)
 
-        hint = QLabel(
+        self._hint = QLabel(
             "Without this, Clone Hero ignores ghost/accent markers entirely.")
-        hint.setStyleSheet("color: #888;")
-        outer.addWidget(hint)
+        self._hint.setStyleSheet("color: #888;")
+        outer.addWidget(self._hint)
 
-        btn_row = QHBoxLayout()
+        self._btn_row = QWidget()
+        btn_row = QHBoxLayout(self._btn_row)
+        btn_row.setContentsMargins(0, 0, 0, 0)
         self.check_all_btn = QPushButton("Check all")
         self.uncheck_all_btn = QPushButton("Uncheck all")
         self.check_all_btn.clicked.connect(lambda: self._set_all(True))
@@ -1108,7 +1257,7 @@ class DynamicsPage(QWizardPage):
         btn_row.addWidget(self.check_all_btn)
         btn_row.addWidget(self.uncheck_all_btn)
         btn_row.addStretch(1)
-        outer.addLayout(btn_row)
+        outer.addWidget(self._btn_row)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -1119,12 +1268,7 @@ class DynamicsPage(QWizardPage):
         self._rows_layout.addStretch(1)
         self._scroll.setWidget(self._container)
         outer.addWidget(self._scroll, 1)
-
-        self._empty_label = QLabel(
-            "No ghost or accent notes were detected in the mapped track.")
-        self._empty_label.setStyleSheet("color: #888;")
-        self._empty_label.setVisible(False)
-        outer.addWidget(self._empty_label)
+        outer.addStretch(1)
 
         self._row_checks: dict = {}
 
@@ -1183,10 +1327,18 @@ class DynamicsPage(QWizardPage):
             self._rows_layout.insertWidget(self._rows_layout.count() - 1, w)
             self._row_checks[combo] = cb
 
-        self._empty_label.setVisible(not combos)
+        has_combos = bool(combos)
+        self._empty_label.setVisible(not has_combos)
+        self.enable_cb.setVisible(has_combos)
+        self._hint.setVisible(has_combos)
+        self._btn_row.setVisible(has_combos)
+        self._scroll.setVisible(has_combos)
 
     def validatePage(self) -> bool:
-        self.state.chart_dynamics = self.enable_cb.isChecked()
+        if self._row_checks:
+            self.state.chart_dynamics = self.enable_cb.isChecked()
+        else:
+            self.state.chart_dynamics = True
         self.state.dynamics_enabled = {
             combo: cb.isChecked() for combo, cb in self._row_checks.items()
         }
@@ -1559,6 +1711,7 @@ class RunPage(QWizardPage):
             if summary["hand_warnings"]:
                 self._append(f"  Warning: {summary['hand_warnings']} tick(s) "
                              "with >2 simultaneous hand notes")
+            cfg.log_history(state.artist, state.song_name, state.url)
         except Exception:
             return self._fail("render")
         self._step(0, self._step_ini)
