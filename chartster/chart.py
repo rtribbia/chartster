@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .mapping import (
     SONGSTERR_TO_CH,
@@ -56,11 +56,20 @@ def render(
     two_tom_kit: bool = False,
     tempos_override: Optional[List[Tuple[int, float]]] = None,
     mapping: Optional[Dict[int, Lane]] = None,
+    chart_dynamics: bool = True,
+    dynamics_enabled: Optional[Set[Tuple[int, bool, str]]] = None,
 ) -> dict:
     """Write a Clone Hero .chart file. Returns a summary dict.
 
     `mapping`: optional Songsterr-fret → CH-Lane dict. Frets absent from the
     dict are skipped. Defaults to SONGSTERR_TO_CH.
+
+    `chart_dynamics`: emit ENABLE_CHART_DYNAMICS so CH renders ghost/accent
+    markers. If False, markers are skipped altogether.
+
+    `dynamics_enabled`: optional set of (lane, is_cymbal, kind) combos whose
+    ghost/accent markers should be emitted. Combos not present are rendered
+    as normal notes (no marker). None = enable all combos.
     """
     m = mapping if mapping is not None else SONGSTERR_TO_CH
     hits, tempos, time_sigs = _flatten(song, two_tom_kit, m)
@@ -74,8 +83,8 @@ def render(
     lines: List[str] = []
     _write_song(lines, name, artist, charter)
     _write_sync(lines, tempos, time_sigs)
-    _write_events(lines)
-    hand_warnings = _write_expert_drums(lines, hits, m)
+    _write_events(lines, chart_dynamics)
+    hand_warnings = _write_expert_drums(lines, hits, m, dynamics_enabled)
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -275,16 +284,21 @@ def _den_to_exponent(den: int) -> int:
     return exp
 
 
-def _write_events(lines: List[str]) -> None:
+def _write_events(lines: List[str], chart_dynamics: bool = True) -> None:
     lines.append("[Events]")
     lines.append("{")
     # Required for CH to honor ghost/accent markers.
-    lines.append('  0 = E "ENABLE_CHART_DYNAMICS"')
+    if chart_dynamics:
+        lines.append('  0 = E "ENABLE_CHART_DYNAMICS"')
     lines.append("}")
 
 
-def _write_expert_drums(lines: List[str], hits: List[Hit],
-                        mapping: Dict[int, Lane]) -> int:
+def _write_expert_drums(
+    lines: List[str],
+    hits: List[Hit],
+    mapping: Dict[int, Lane],
+    dynamics_enabled: Optional[Set[Tuple[int, bool, str]]] = None,
+) -> int:
     lines.append("[ExpertDrums]")
     lines.append("{")
 
@@ -305,6 +319,11 @@ def _write_expert_drums(lines: List[str], hits: List[Hit],
         if ch.cymbal_marker is not None:
             lines.append(f"  {h.tick} = N {ch.cymbal_marker} 0")
         v = classify_velocity(h.velocity)
+        if v == "normal":
+            continue
+        if dynamics_enabled is not None and (
+            ch.lane, ch.is_cymbal, v) not in dynamics_enabled:
+            continue
         if v == "ghost":
             lines.append(f"  {h.tick} = N {ghost_marker(ch.lane)} 0")
         elif v == "accent":

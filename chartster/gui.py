@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -63,6 +64,55 @@ _LANE_ASSET = {
     (GREEN, True): "green_cymbal.gif",
 }
 _icon_cache: dict[str, QIcon] = {}
+_trimmed_pm_cache: dict = {}
+
+
+def _trim_transparent(pm: QPixmap) -> QPixmap:
+    """Crop transparent border rows/columns from a QPixmap."""
+    if pm.isNull():
+        return pm
+    img = pm.toImage()
+    w, h = img.width(), img.height()
+    top = 0
+    while top < h and all(img.pixelColor(x, top).alpha() == 0
+                          for x in range(w)):
+        top += 1
+    bottom = h - 1
+    while bottom > top and all(img.pixelColor(x, bottom).alpha() == 0
+                               for x in range(w)):
+        bottom -= 1
+    left = 0
+    while left < w and all(img.pixelColor(left, y).alpha() == 0
+                           for y in range(top, bottom + 1)):
+        left += 1
+    right = w - 1
+    while right > left and all(img.pixelColor(right, y).alpha() == 0
+                               for y in range(top, bottom + 1)):
+        right -= 1
+    if left == 0 and top == 0 and right == w - 1 and bottom == h - 1:
+        return pm
+    return pm.copy(left, top, right - left + 1, bottom - top + 1)
+
+
+def _lane_pixmap_trimmed(lane, size: int) -> Optional[QPixmap]:
+    """Scaled, transparency-trimmed pixmap for a lane gif — cached per size."""
+    if lane is None or lane.lane == KICK:
+        icon = _lane_icon(lane)
+        return icon.pixmap(size, size) if icon else None
+    fname = _LANE_ASSET.get((lane.lane, lane.is_cymbal))
+    if not fname:
+        return None
+    key = (fname, size)
+    if key in _trimmed_pm_cache:
+        return _trimmed_pm_cache[key]
+    icon = _lane_icon(lane)
+    if icon is None:
+        return None
+    pm = icon.pixmap(128, 128)
+    trimmed = _trim_transparent(pm).scaled(
+        size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    _trimmed_pm_cache[key] = trimmed
+    return trimmed
 
 
 def _lane_label(lane) -> str:
@@ -144,6 +194,8 @@ class State:
     part_id: Optional[int] = None
     song: Any = None
     mapping: dict = field(default_factory=dict)
+    chart_dynamics: bool = True
+    dynamics_enabled: dict = field(default_factory=dict)
     alignments: list = field(default_factory=list)
     alignment: Optional[dict] = None
     output_dir: str = ""
@@ -997,6 +1049,150 @@ class MappingPage(QWizardPage):
         return True
 
 
+def _scan_dynamics(song, mapping) -> list:
+    """Return sorted list of ((lane, is_cymbal, kind), count) for every combo
+    whose mapped notes produce ghost or accent output in the rendered chart."""
+    from .mapping import classify_velocity
+    counts: dict = {}
+    for measure in song.measures:
+        for voice in measure.voices:
+            for beat in voice.beats:
+                if beat.rest:
+                    continue
+                for note in beat.notes:
+                    lane = mapping.get(note.fret)
+                    if lane is None:
+                        continue
+                    v = beat.velocity
+                    if note.ghost:
+                        v = max(1, v - 50)
+                    elif note.accent == 1:
+                        v = min(127, v + 20)
+                    elif note.accent == 2:
+                        v = max(1, v - 50)
+                    kind = classify_velocity(v)
+                    if kind != "normal":
+                        key = (lane.lane, lane.is_cymbal, kind)
+                        counts[key] = counts.get(key, 0) + 1
+    order = {RED: 0, YELLOW: 1, BLUE: 2, GREEN: 3, KICK: 4}
+    return sorted(counts.items(),
+                  key=lambda item: (order.get(item[0][0], 9),
+                                    item[0][1], item[0][2]))
+
+
+class DynamicsPage(QWizardPage):
+    def __init__(self, state: State):
+        super().__init__()
+        self.state = state
+        self.setTitle("Dynamics")
+        self.setSubTitle("Choose which ghost and accent notes to keep. "
+                         "Unchecked combos become normal notes.")
+        outer = QVBoxLayout(self)
+
+        self.enable_cb = QCheckBox(
+            "Enable chart dynamics in Clone Hero")
+        self.enable_cb.setChecked(True)
+        self.enable_cb.setStyleSheet("font-weight: bold;")
+        outer.addWidget(self.enable_cb)
+
+        hint = QLabel(
+            "Without this, Clone Hero ignores ghost/accent markers entirely.")
+        hint.setStyleSheet("color: #888;")
+        outer.addWidget(hint)
+
+        btn_row = QHBoxLayout()
+        self.check_all_btn = QPushButton("Check all")
+        self.uncheck_all_btn = QPushButton("Uncheck all")
+        self.check_all_btn.clicked.connect(lambda: self._set_all(True))
+        self.uncheck_all_btn.clicked.connect(lambda: self._set_all(False))
+        btn_row.addWidget(self.check_all_btn)
+        btn_row.addWidget(self.uncheck_all_btn)
+        btn_row.addStretch(1)
+        outer.addLayout(btn_row)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._container = QWidget()
+        self._rows_layout = QVBoxLayout(self._container)
+        self._rows_layout.setContentsMargins(4, 4, 4, 4)
+        self._rows_layout.setSpacing(0)
+        self._rows_layout.addStretch(1)
+        self._scroll.setWidget(self._container)
+        outer.addWidget(self._scroll, 1)
+
+        self._empty_label = QLabel(
+            "No ghost or accent notes were detected in the mapped track.")
+        self._empty_label.setStyleSheet("color: #888;")
+        self._empty_label.setVisible(False)
+        outer.addWidget(self._empty_label)
+
+        self._row_checks: dict = {}
+
+    def _set_all(self, value: bool) -> None:
+        self.enable_cb.setChecked(value)
+        for cb in self._row_checks.values():
+            cb.setChecked(value)
+
+    def initializePage(self) -> None:
+        # Clear any previous rows (mapping may have changed).
+        while self._rows_layout.count() > 1:
+            item = self._rows_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._row_checks.clear()
+
+        combos = _scan_dynamics(self.state.song, self.state.mapping) \
+            if self.state.song is not None else []
+
+        self.enable_cb.setChecked(self.state.chart_dynamics)
+
+        for combo, count in combos:
+            lane_int, is_cymbal, kind = combo
+            w = QWidget()
+            row = QHBoxLayout(w)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+
+            icon_label = QLabel()
+            icon_label.setFixedSize(28, 28)
+            icon_label.setAlignment(Qt.AlignCenter)
+            from .mapping import Lane
+            lane_obj = Lane(lane_int, is_cymbal)
+            pm = _lane_pixmap_trimmed(lane_obj, 28)
+            if pm is not None:
+                icon_label.setPixmap(pm)
+            row.addWidget(icon_label)
+
+            cb = QCheckBox()
+            existing = self.state.dynamics_enabled.get(combo)
+            cb.setChecked(existing if existing is not None else True)
+            row.addWidget(cb)
+
+            noun = "note" if count == 1 else "notes"
+            lbl = QLabel(
+                f"<b>{_lane_label(lane_obj)}</b> "
+                f"<span>— {count} {kind} {noun}</span>"
+            )
+            lbl.setTextFormat(Qt.RichText)
+            row.addWidget(lbl)
+            row.addStretch(1)
+
+            lbl.mousePressEvent = lambda _e, c=cb: c.toggle()
+
+            self._rows_layout.insertWidget(self._rows_layout.count() - 1, w)
+            self._row_checks[combo] = cb
+
+        self._empty_label.setVisible(not combos)
+
+    def validatePage(self) -> bool:
+        self.state.chart_dynamics = self.enable_cb.isChecked()
+        self.state.dynamics_enabled = {
+            combo: cb.isChecked() for combo, cb in self._row_checks.items()
+        }
+        return True
+
+
 class AlignmentPage(QWizardPage):
     def __init__(self, state: State):
         super().__init__()
@@ -1255,6 +1451,30 @@ class OutputPage(QWizardPage):
 
     def validatePage(self) -> bool:
         out_path = Path(self.dir_edit.text().strip()).expanduser()
+        if out_path.exists():
+            candidates = ["notes.chart", "song.ini", "README.txt"]
+            if self.download_cb.isChecked():
+                candidates.append("song.mp3")
+            existing = [n for n in candidates if (out_path / n).exists()]
+            if existing:
+                msg = (f"The folder <b>{out_path}</b> already exists and "
+                       f"contains {len(existing)} file(s) that will be "
+                       f"overwritten:<br><br>" +
+                       "<br>".join(f"• {n}" for n in existing) +
+                       "<br><br>Continue?")
+            else:
+                msg = (f"The folder <b>{out_path}</b> already exists. Any "
+                       "existing files with the same names will be "
+                       "overwritten. Continue?")
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Overwrite existing folder?")
+            box.setTextFormat(Qt.RichText)
+            box.setText(msg)
+            box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            box.setDefaultButton(QMessageBox.No)
+            if box.exec() != QMessageBox.Yes:
+                return False
         self.state.output_dir = str(out_path)
         self.state.download_audio = self.download_cb.isChecked()
         self.state.ytdlp_path = (
@@ -1324,11 +1544,14 @@ class RunPage(QWizardPage):
             self._out_dir = out_dir
             chart_path = out_dir / "notes.chart"
             self._append(f"Writing {_tildify(str(chart_path))}…")
+            dyn_enabled = {k for k, v in state.dynamics_enabled.items() if v}
             summary = render(
                 state.song, str(chart_path),
                 name=state.song_name, artist=state.artist,
                 charter="Chartster", tempos_override=tempos_override,
                 mapping=state.mapping,
+                chart_dynamics=state.chart_dynamics,
+                dynamics_enabled=dyn_enabled,
             )
             self._append(f"  {summary['hits']} notes, "
                          f"{summary['tempo_changes']} tempo changes, "
@@ -1503,6 +1726,7 @@ class Wizard(QWizard):
         self.addPage(UrlPage(self.state))
         self.addPage(TrackPage(self.state))
         self.addPage(MappingPage(self.state))
+        self.addPage(DynamicsPage(self.state))
         self.addPage(AlignmentPage(self.state))
         self.addPage(OutputPage(self.state))
         self.addPage(RunPage(self.state))
