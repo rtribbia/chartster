@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
 import traceback
+import urllib.request
 import dataclasses
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -48,6 +51,7 @@ from PySide6.QtWidgets import (
 
 from . import config as cfg
 from . import fetch as sfetch
+from . import lyrics as lyrics_mod
 from . import video_points as vp
 from .chart import TICKS_PER_BEAT, estimate_duration, render
 from .mapping import (
@@ -215,8 +219,14 @@ class State:
     mapping: dict = field(default_factory=dict)
     chart_dynamics: bool = True
     dynamics_enabled: dict = field(default_factory=dict)
+    lyric_candidates: dict = field(default_factory=dict)  # partId -> notes JSON
+    vocal_part_id: Optional[int] = None  # None = skip lyrics
+    lyrics: list = field(default_factory=list)            # [(tick, syllable)]
+    phrase_ranges: list = field(default_factory=list)     # [(start_tick, end_tick)]
     alignments: list = field(default_factory=list)
     alignment: Optional[dict] = None
+    album_art_bytes: Optional[bytes] = None
+    album_art_video_id: Optional[str] = None
     output_dir: str = ""
     song_name: str = ""
     artist: str = ""
@@ -662,6 +672,7 @@ class ChartPreview(QWidget):
     PAD_X = 18
     PAD_Y = 24
     LABEL_MARGIN = 30   # left gutter for measure numbers
+    LYRIC_GUTTER = 24   # left gutter for lyric column when lyrics attached
     PX_PER_WHOLE = 200
     NOTE_SIZE = 16
 
@@ -677,6 +688,8 @@ class ChartPreview(QWidget):
     LANE_GUIDE    = QColor("#24262a")
     NOTE_OUTLINE  = QColor("#0a0b0d")
     LABEL_COLOR   = QColor("#6a6d72")
+    LYRIC_COLOR   = QColor("#ffffff")
+    PHRASE_COLOR  = QColor("#5a6068")
 
     _LANE_ORDER = (RED, YELLOW, BLUE, GREEN)
 
@@ -689,9 +702,11 @@ class ChartPreview(QWidget):
         self._kicks: list = []             # (pos_whole, fret)
         self._measure_starts: list = []
         self._total_whole: float = 0.0
+        self._lyrics: list = []            # [(pos_whole, syllable)]
+        self._phrase_marks: list = []      # [pos_whole] phrase-start positions
+        self._dim_chart: bool = False      # fade non-lyric elements when set
         self.setAutoFillBackground(False)
-        self.setMinimumWidth(len(self._LANE_ORDER) * self.LANE_WIDTH
-                             + 2 * self.PAD_X)
+        self.setMinimumWidth(self._base_width())
 
     def setSong(self, song) -> None:
         self.song = song
@@ -704,6 +719,33 @@ class ChartPreview(QWidget):
     def setBorders(self, borders: dict) -> None:
         self._borders = borders
         self.update()
+
+    def setLyrics(self, events: list, phrase_starts: list) -> None:
+        """Attach lyric syllables to the preview.
+
+        events: [(pos_whole, syllable), ...]
+        phrase_starts: [pos_whole, ...] — phrase boundaries to mark visually.
+        Both positions are in the same fraction-of-whole-note unit the
+        chart uses internally. The gutter is rendered on the LEFT of the
+        lanes so it stays visible when the preview is width-constrained.
+        """
+        self._lyrics = list(events)
+        self._phrase_marks = list(phrase_starts)
+        self.setMinimumWidth(self._base_width())
+        self.updateGeometry()
+        self.update()
+
+    def setDimChart(self, dim: bool) -> None:
+        """When True, draw notes/lanes/labels at 50% opacity so attached
+        lyrics read as the page's primary content."""
+        self._dim_chart = dim
+        self.update()
+
+    def _base_width(self) -> int:
+        w = len(self._LANE_ORDER) * self.LANE_WIDTH + 2 * self.PAD_X + self.LABEL_MARGIN
+        if self._lyrics:
+            w += self.LYRIC_GUTTER
+        return w
 
     def _rebuild(self) -> None:
         self._hits.clear()
@@ -781,8 +823,7 @@ class ChartPreview(QWidget):
 
     def sizeHint(self):
         h = int(self._total_whole * self.PX_PER_WHOLE) + 2 * self.PAD_Y
-        w = len(self._LANE_ORDER) * self.LANE_WIDTH + 2 * self.PAD_X
-        return QSize(w, max(200, h))
+        return QSize(self._base_width(), max(200, h))
 
     def paintEvent(self, event) -> None:
         p = QPainter(self)
@@ -800,7 +841,8 @@ class ChartPreview(QWidget):
             # Song start anchored to the widget's bottom; end = bottom - chart_px.
             base_y = bottom
 
-            lanes_inner_left = self.LABEL_MARGIN
+            lyric_gutter_w = self.LYRIC_GUTTER if self._lyrics else 0
+            lanes_inner_left = lyric_gutter_w + self.LABEL_MARGIN
             lanes_inner_right = w - self.PAD_X
             lane_count = len(self._LANE_ORDER)
             inner_w = lanes_inner_right - lanes_inner_left
@@ -809,6 +851,8 @@ class ChartPreview(QWidget):
                 for i, lane in enumerate(self._LANE_ORDER)
             }
 
+            chart_alpha = 0.5 if (self._dim_chart and self._lyrics) else 1.0
+            p.setOpacity(chart_alpha)
             p.setPen(self.LANE_GUIDE)
             for x in lane_x.values():
                 p.drawLine(int(x), int(base_y - chart_px), int(x), int(base_y))
@@ -822,7 +866,8 @@ class ChartPreview(QWidget):
                            int(lanes_inner_right), int(y))
                 p.setPen(self.LABEL_COLOR)
                 p.setFont(label_font)
-                box = QRect(0, int(y) - 8, int(lanes_inner_left) - 4, 16)
+                box = QRect(int(lyric_gutter_w), int(y) - 8,
+                            int(self.LABEL_MARGIN) - 4, 16)
                 p.drawText(box, Qt.AlignRight | Qt.AlignVCenter, str(i + 1))
             end_y = base_y - chart_px
             p.setPen(self.MEASURE_LINE)
@@ -857,8 +902,40 @@ class ChartPreview(QWidget):
                     p.drawPolygon(tri)
                 else:
                     p.drawRect(int(x - half), int(y - half), size, size)
+
+            if self._lyrics:
+                p.setOpacity(1.0)
+                self._paint_lyrics(p, base_y)
         finally:
             p.end()
+
+    def _paint_lyrics(self, p: QPainter, base_y: float) -> None:
+        # Gutter occupies the leftmost LYRIC_GUTTER pixels (before
+        # LABEL_MARGIN) so it stays visible when the preview is
+        # width-constrained.
+        gutter_left = 0
+        gutter_right = self.LYRIC_GUTTER
+        font = QFont()
+        font.setPointSize(10)
+        font.setBold(True)
+        p.setFont(font)
+        # Faint horizontal divider at each phrase start.
+        p.setPen(QPen(self.PHRASE_COLOR, 1, Qt.DashLine))
+        for pos in self._phrase_marks:
+            y = base_y - pos * self.PX_PER_WHOLE
+            p.drawLine(int(gutter_left + 2), int(y),
+                       int(gutter_right - 2), int(y))
+        # Syllables rotated -90° read upward along the chart. Rotated
+        # text occupies only ~font-height horizontally, so a tight gutter
+        # keeps the column flush against the widget's left border.
+        p.setPen(self.LYRIC_COLOR)
+        for pos, syl in self._lyrics:
+            y = base_y - pos * self.PX_PER_WHOLE
+            p.save()
+            p.translate(gutter_left + 16, y)
+            p.rotate(-90)
+            p.drawText(0, 4, syl)
+            p.restore()
 
 
 class MappingPage(QWizardPage):
@@ -1345,6 +1422,241 @@ class DynamicsPage(QWizardPage):
         return True
 
 
+_VOCAL_INSTRUMENT_RE = re.compile(
+    r"^(soprano|alto|tenor|baritone|bass)\s+sax(?:ophone)?$", re.I)
+_VOCAL_NAME_RE = re.compile(
+    r"\b(vocal|vocals|voice|lead vox|backing|choir|lyrics|singer)\b", re.I)
+
+
+def _is_vocal_candidate(track: dict) -> bool:
+    inst = (track.get("instrument") or "").strip()
+    name = (track.get("name") or track.get("title") or "").strip()
+    if _VOCAL_INSTRUMENT_RE.match(inst):
+        return True
+    if _VOCAL_NAME_RE.search(name):
+        return True
+    return False
+
+
+class LyricsTrackPage(QWizardPage):
+    """Pick which vocal track's lyrics to embed (or skip lyrics entirely).
+
+    Candidates are pre-filtered by instrument/name heuristic, then their
+    notes JSON is fetched in parallel to confirm `withLyrics: true` before
+    they're shown.
+    """
+    # Distinct from Qt's "no selection" sentinel (-1) and from any partId.
+    SKIP_ID = -2
+
+    def __init__(self, state: State):
+        super().__init__()
+        self.state = state
+        self._loaded = False
+        self._preview_page_id = -1
+        self._post_lyrics_page_id = -1
+        self.setTitle("Lyrics")
+        self.setSubTitle(
+            "Songsterr stores lyrics on vocal tracks. Pick one to include "
+            "synced lyrics in the chart, or skip.")
+
+        outer = QVBoxLayout(self)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        outer.addWidget(self.status)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
+        outer.addWidget(self.progress)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self._container = QWidget()
+        self._vbox = QVBoxLayout(self._container)
+        self._vbox.addStretch(1)
+        scroll.setWidget(self._container)
+        outer.addWidget(scroll)
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._group.buttonClicked.connect(lambda _: self.completeChanged.emit())
+
+    def initializePage(self) -> None:
+        for btn in list(self._group.buttons()):
+            self._group.removeButton(btn)
+            btn.setParent(None)
+            btn.deleteLater()
+        while self._vbox.count() > 1:
+            item = self._vbox.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._loaded = False
+        self.state.lyric_candidates = {}
+        self.state.vocal_part_id = None
+
+        candidates = [t for t in self.state.tracks if _is_vocal_candidate(t)]
+        if not candidates:
+            self._show_skip_only("Songsterr has no vocal tracks for this song.")
+            return
+
+        self.status.setText(f"Checking {len(candidates)} vocal track(s) for lyrics…")
+        self.progress.show()
+        state = self.state
+        image = (state.meta.get("image")
+                 or (state.meta.get("current") or {}).get("image"))
+
+        def work():
+            results: list[tuple[dict, dict | None, str | None]] = []
+            for t in candidates:
+                pid = t.get("partId")
+                try:
+                    notes = sfetch.fetch_notes(state.song_id, state.revision_id,
+                                               image, pid)
+                except Exception as e:
+                    results.append((t, None, str(e)))
+                    continue
+                if lyrics_mod.has_lyrics(notes):
+                    results.append((t, notes, None))
+                else:
+                    results.append((t, None, None))
+            return results
+
+        def on_done(results):
+            self.progress.hide()
+            confirmed = [(t, notes) for t, notes, _ in results if notes]
+            if not confirmed:
+                self._show_skip_only(
+                    "None of the vocal tracks have lyrics on Songsterr.")
+                return
+            self.state.lyric_candidates = {
+                t.get("partId"): notes for t, notes in confirmed}
+            self.status.setText(
+                f"{len(confirmed)} vocal track(s) with lyrics. "
+                "Pick one to include, or skip.")
+            for t, notes in confirmed:
+                pid = t.get("partId")
+                inst = t.get("instrument") or ""
+                name = t.get("name") or t.get("title") or ""
+                events, _ = lyrics_mod.walk(notes)
+                label = f"{name or inst} — {len(events)} syllables"
+                btn = QRadioButton(label)
+                self._group.addButton(btn, pid)
+                self._vbox.insertWidget(self._vbox.count() - 1, btn)
+            skip_btn = QRadioButton("Skip lyrics")
+            self._group.addButton(skip_btn, self.SKIP_ID)
+            self._vbox.insertWidget(self._vbox.count() - 1, skip_btn)
+            self._group.buttons()[0].setChecked(True)
+            self._loaded = True
+            self.completeChanged.emit()
+
+        def on_failed(msg):
+            self.progress.hide()
+            self.status.setText(f"Failed: {msg.strip().splitlines()[-1]}")
+            self._show_skip_only("")
+
+        self._emitter = run_async(self, work, on_done, on_failed)
+
+    def _show_skip_only(self, msg: str) -> None:
+        if msg:
+            self.status.setText(msg)
+        skip_btn = QRadioButton("Skip lyrics")
+        self._group.addButton(skip_btn, self.SKIP_ID)
+        self._vbox.insertWidget(self._vbox.count() - 1, skip_btn)
+        skip_btn.setChecked(True)
+        self._loaded = True
+        self.completeChanged.emit()
+
+    def isComplete(self) -> bool:
+        return self._loaded and self._group.checkedButton() is not None
+
+    def validatePage(self) -> bool:
+        cid = self._group.checkedId()
+        if cid == self.SKIP_ID or cid not in self.state.lyric_candidates:
+            self.state.vocal_part_id = None
+        else:
+            self.state.vocal_part_id = cid
+        return True
+
+    def set_skip_target(self, preview_id: int, post_id: int) -> None:
+        self._preview_page_id = preview_id
+        self._post_lyrics_page_id = post_id
+
+    def nextId(self) -> int:
+        # Bypass the preview page entirely when no track was picked. Keeps
+        # the back button working — clicking Back from AlignmentPage lands
+        # back here, not on a self-skipping preview page.
+        cid = self._group.checkedId()
+        if cid == self.SKIP_ID or cid not in self.state.lyric_candidates:
+            if self._post_lyrics_page_id >= 0:
+                return self._post_lyrics_page_id
+        return super().nextId()
+
+
+class LyricsPreviewPage(QWizardPage):
+    """Visualize the picked vocal track's syllables alongside the drum chart.
+
+    Skipped automatically when no vocal track was chosen.
+    """
+
+    def __init__(self, state: State):
+        super().__init__()
+        self.state = state
+        self.setTitle("Preview lyrics")
+        self.setSubTitle(
+            "Lyric syllables run top-to-bottom alongside the drum lanes. "
+            "Use Back to swap tracks or skip.")
+
+        outer = QVBoxLayout(self)
+        self.status = QLabel("")
+        outer.addWidget(self.status)
+
+        self.preview = ChartPreview()
+        self.preview.setDimChart(True)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setWidget(self.preview)
+        # Constrain preview width to ~40% of the wizard so the lyric gutter
+        # stays comfortably on-screen and the page doesn't feel chart-heavy.
+        self._scroll.setMaximumWidth(420)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_row = QHBoxLayout()
+        scroll_row.setContentsMargins(0, 0, 0, 0)
+        scroll_row.addWidget(self._scroll)
+        scroll_row.addStretch(1)
+        outer.addLayout(scroll_row, 1)
+
+    def initializePage(self) -> None:
+        state = self.state
+        # LyricsTrackPage.nextId() routes around this page when lyrics are
+        # skipped, so reaching here means a vocal track was picked.
+        notes = state.lyric_candidates.get(state.vocal_part_id)
+        if notes is None:
+            self.status.setText("Lyric data missing — going back.")
+            QTimer.singleShot(0, lambda: self.wizard().back())
+            return
+        events, phrases = lyrics_mod.walk(notes)
+        state.lyrics = events
+        state.phrase_ranges = phrases
+        self.status.setText(
+            f"{len(events)} syllables across {len(phrases)} phrases.")
+        # Convert tick positions → fraction-of-whole-note for the preview
+        # widget (matches how existing notes are positioned).
+        ticks_to_whole = 1.0 / (TICKS_PER_BEAT * 4.0)
+        lyric_pos = [(t * ticks_to_whole, syl) for t, syl in events]
+        phrase_pos = [start * ticks_to_whole for start, _ in phrases]
+        self.preview.setSong(state.song)
+        self.preview.setMapping(state.mapping)
+        self.preview.setLyrics(lyric_pos, phrase_pos)
+        QTimer.singleShot(0, self._scroll_to_start)
+
+    def _scroll_to_start(self) -> None:
+        bar = self._scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def validatePage(self) -> bool:
+        return True
+
+
 class AlignmentPage(QWizardPage):
     def __init__(self, state: State):
         super().__init__()
@@ -1453,6 +1765,185 @@ class AlignmentPage(QWizardPage):
         if idx < 0:
             return False
         self.state.alignment = self.state.alignments[idx]
+        return True
+
+
+class AlbumArtPage(QWizardPage):
+    """Pick a YouTube thumbnail to save as album.jpg, or skip."""
+    SKIP_ID = -2
+    THUMB_W = 240
+    THUMB_H = 180
+
+    def __init__(self, state: State):
+        super().__init__()
+        self.state = state
+        self._loaded = False
+        self._video_ids: list[str] = []
+        self._thumbs: dict[str, bytes] = {}
+        self.setTitle("Album art")
+        self.setSubTitle(
+            "Pick a YouTube thumbnail to save as album.jpg, or skip.")
+
+        outer = QVBoxLayout(self)
+        self.status = QLabel("")
+        outer.addWidget(self.status)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
+        outer.addWidget(self.progress)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self._container = QWidget()
+        self._grid = QGridLayout(self._container)
+        self._grid.setSpacing(12)
+        self._grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        scroll.setWidget(self._container)
+        outer.addWidget(scroll, 1)
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._group.buttonClicked.connect(lambda _: self.completeChanged.emit())
+
+    def initializePage(self) -> None:
+        for btn in list(self._group.buttons()):
+            self._group.removeButton(btn)
+            btn.setParent(None)
+            btn.deleteLater()
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._loaded = False
+        self._thumbs = {}
+        self._video_ids = []
+        self.state.album_art_bytes = None
+        self.state.album_art_video_id = None
+
+        seen: list[str] = []
+        for a in self.state.alignments or []:
+            vid = a.get("videoId")
+            if vid and vid not in seen:
+                seen.append(vid)
+        if not seen:
+            self._show_skip_only(
+                "No alignments — nothing to grab thumbnails from.")
+            return
+
+        self._video_ids = seen
+        self.status.setText(f"Fetching {len(seen)} thumbnail(s)…")
+        self.progress.show()
+
+        def work():
+            results: dict[str, bytes] = {}
+            for vid in seen:
+                url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+                try:
+                    req = urllib.request.Request(url)
+                    with urllib.request.urlopen(req, timeout=8) as r:
+                        results[vid] = r.read()
+                except Exception:
+                    pass
+            return results
+
+        def on_done(results):
+            self.progress.hide()
+            self._thumbs = results
+            self._build_grid()
+            self.status.setText(
+                f"{len(results)}/{len(seen)} thumbnail(s) fetched. "
+                "Pick one or skip.")
+            self._loaded = True
+            self.completeChanged.emit()
+
+        def on_failed(msg):
+            self.progress.hide()
+            self.status.setText(f"Failed: {msg.strip().splitlines()[-1]}")
+            self._show_skip_only("")
+
+        self._emitter = run_async(self, work, on_done, on_failed)
+
+    def _build_grid(self) -> None:
+        cols = 3
+        picked_vid = (self.state.alignment or {}).get("videoId")
+        default_btn = None
+        cell_idx = 0
+        for vid in self._video_ids:
+            data = self._thumbs.get(vid)
+            if data is None:
+                continue
+            pix = QPixmap()
+            pix.loadFromData(data)
+            if pix.isNull():
+                continue
+            pix = pix.scaled(
+                self.THUMB_W, self.THUMB_H,
+                Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(4)
+            btn = QPushButton()
+            btn.setIcon(QIcon(pix))
+            btn.setIconSize(pix.size())
+            btn.setFixedSize(self.THUMB_W + 12, self.THUMB_H + 12)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                "QPushButton { border: 2px solid #2b2d31; border-radius: 4px;"
+                " padding: 2px; background: #1a1c1f; }"
+                "QPushButton:hover { border-color: #5a6068; }"
+                "QPushButton:checked { border: 2px solid #4ea1ff; }")
+            self._group.addButton(btn, self._video_ids.index(vid))
+            cell_layout.addWidget(btn, 0, Qt.AlignCenter)
+            label = QLabel(f"youtu.be/{vid}")
+            label.setStyleSheet("color: #888; font-size: 9pt;")
+            label.setAlignment(Qt.AlignCenter)
+            cell_layout.addWidget(label)
+            self._grid.addWidget(cell, cell_idx // cols, cell_idx % cols)
+            if vid == picked_vid and default_btn is None:
+                default_btn = btn
+            cell_idx += 1
+
+        skip_btn = QRadioButton("Skip album art")
+        self._group.addButton(skip_btn, self.SKIP_ID)
+        skip_row = cell_idx // cols + 1
+        self._grid.addWidget(skip_btn, skip_row, 0, 1, cols)
+
+        if default_btn is not None:
+            default_btn.setChecked(True)
+        elif cell_idx > 0:
+            # Pick the first thumbnail if none matched.
+            for b in self._group.buttons():
+                if self._group.id(b) != self.SKIP_ID:
+                    b.setChecked(True)
+                    break
+        else:
+            skip_btn.setChecked(True)
+
+    def _show_skip_only(self, msg: str) -> None:
+        if msg:
+            self.status.setText(msg)
+        skip_btn = QRadioButton("Skip album art")
+        self._group.addButton(skip_btn, self.SKIP_ID)
+        skip_btn.setChecked(True)
+        self._grid.addWidget(skip_btn, 0, 0)
+        self._loaded = True
+        self.completeChanged.emit()
+
+    def isComplete(self) -> bool:
+        return self._loaded and self._group.checkedButton() is not None
+
+    def validatePage(self) -> bool:
+        cid = self._group.checkedId()
+        if cid == self.SKIP_ID or cid < 0 or cid >= len(self._video_ids):
+            self.state.album_art_bytes = None
+            self.state.album_art_video_id = None
+        else:
+            vid = self._video_ids[cid]
+            self.state.album_art_bytes = self._thumbs.get(vid)
+            self.state.album_art_video_id = vid
         return True
 
 
@@ -1605,6 +2096,8 @@ class OutputPage(QWizardPage):
         out_path = Path(self.dir_edit.text().strip()).expanduser()
         if out_path.exists():
             candidates = ["notes.chart", "song.ini", "README.txt"]
+            if self.state.album_art_bytes:
+                candidates.append("album.jpg")
             if self.download_cb.isChecked():
                 candidates.append("song.mp3")
             existing = [n for n in candidates if (out_path / n).exists()]
@@ -1704,6 +2197,8 @@ class RunPage(QWizardPage):
                 mapping=state.mapping,
                 chart_dynamics=state.chart_dynamics,
                 dynamics_enabled=dyn_enabled,
+                lyrics=state.lyrics or None,
+                phrase_ranges=state.phrase_ranges or None,
             )
             self._append(f"  {summary['hits']} notes, "
                          f"{summary['tempo_changes']} tempo changes, "
@@ -1725,6 +2220,12 @@ class RunPage(QWizardPage):
             readme = self._out_dir / "README.txt"
             _write_readme(readme, self.state)
             self._append(f"Wrote {_tildify(str(readme))}")
+            if self.state.album_art_bytes:
+                art = self._out_dir / "album.jpg"
+                art.write_bytes(self.state.album_art_bytes)
+                self._append(
+                    f"Wrote {_tildify(str(art))} "
+                    f"(youtu.be/{self.state.album_art_video_id})")
         except Exception:
             return self._fail("song.ini")
         if self.state.download_audio:
@@ -1880,9 +2381,17 @@ class Wizard(QWizard):
         self.addPage(TrackPage(self.state))
         self.addPage(MappingPage(self.state))
         self.addPage(DynamicsPage(self.state))
-        self.addPage(AlignmentPage(self.state))
+        lyric_track_page = LyricsTrackPage(self.state)
+        lyric_preview_page = LyricsPreviewPage(self.state)
+        self._lyric_track_id = self.addPage(lyric_track_page)
+        self._lyric_preview_id = self.addPage(lyric_preview_page)
+        self._alignment_id = self.addPage(AlignmentPage(self.state))
+        self.addPage(AlbumArtPage(self.state))
         self.addPage(OutputPage(self.state))
         self.addPage(RunPage(self.state))
+        # Wire LyricsTrackPage to skip the preview when "Skip lyrics" is picked.
+        lyric_track_page.set_skip_target(
+            self._lyric_preview_id, self._alignment_id)
         self.setButtonText(QWizard.FinishButton, "Chart another")
 
     def accept(self):

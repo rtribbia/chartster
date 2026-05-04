@@ -58,6 +58,8 @@ def render(
     mapping: Optional[Dict[int, Lane]] = None,
     chart_dynamics: bool = True,
     dynamics_enabled: Optional[Set[Tuple[int, bool, str]]] = None,
+    lyrics: Optional[List[Tuple[int, str]]] = None,
+    phrase_ranges: Optional[List[Tuple[int, int]]] = None,
 ) -> dict:
     """Write a Clone Hero .chart file. Returns a summary dict.
 
@@ -80,10 +82,12 @@ def render(
     if bpm_scale != 1.0:
         tempos = [(tick, bpm * bpm_scale) for tick, bpm in tempos]
 
+    sections = _section_events(song)
+
     lines: List[str] = []
     _write_song(lines, name, artist, charter)
     _write_sync(lines, tempos, time_sigs)
-    _write_events(lines, chart_dynamics)
+    _write_events(lines, chart_dynamics, sections, lyrics, phrase_ranges)
     hand_warnings = _write_expert_drums(lines, hits, m, dynamics_enabled)
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -284,13 +288,52 @@ def _den_to_exponent(den: int) -> int:
     return exp
 
 
-def _write_events(lines: List[str], chart_dynamics: bool = True) -> None:
+def _write_events(
+    lines: List[str],
+    chart_dynamics: bool = True,
+    sections: Optional[List[Tuple[int, str]]] = None,
+    lyrics: Optional[List[Tuple[int, str]]] = None,
+    phrase_ranges: Optional[List[Tuple[int, int]]] = None,
+) -> None:
     lines.append("[Events]")
     lines.append("{")
-    # Required for CH to honor ghost/accent markers.
+    # Tick-keyed event buffer. Secondary key orders events sharing a tick:
+    # ENABLE first (0), then section markers (1), then phrase_start (2),
+    # then lyrics (3), then phrase_end (4) — matches what CH expects when
+    # phrase_start coincides with the first lyric of the phrase.
+    events: List[Tuple[int, int, str]] = []
     if chart_dynamics:
-        lines.append('  0 = E "ENABLE_CHART_DYNAMICS"')
+        events.append((0, 0, 'E "ENABLE_CHART_DYNAMICS"'))
+    for tick, name in sections or []:
+        text = name.replace('"', "'")
+        events.append((tick, 1, f'E "section {text}"'))
+    for start, end in phrase_ranges or []:
+        events.append((start, 2, 'E "phrase_start"'))
+        events.append((end, 4, 'E "phrase_end"'))
+    for tick, syl in lyrics or []:
+        text = syl.replace('"', "'")
+        events.append((tick, 3, f'E "lyric {text}"'))
+    events.sort(key=lambda e: (e[0], e[1]))
+    for tick, _, body in events:
+        lines.append(f"  {tick} = {body}")
     lines.append("}")
+
+
+def _section_events(song) -> List[Tuple[int, str]]:
+    """Walk measures in tick order and emit (tick, section_name) for each
+    measure carrying a marker. Adjacent duplicates are dropped — Songsterr
+    sometimes repeats the same marker on consecutive measures.
+    """
+    out: List[Tuple[int, str]] = []
+    tick = 0
+    last: Optional[str] = None
+    for measure in song.measures:
+        if measure.section and measure.section != last:
+            out.append((tick, measure.section))
+            last = measure.section
+        num, den = measure.signature
+        tick += int(Fraction(num, den) * 4 * TICKS_PER_BEAT)
+    return out
 
 
 def _write_expert_drums(

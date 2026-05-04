@@ -2,26 +2,16 @@
 
 Convert [Songsterr](https://www.songsterr.com) drum tabs into [Clone Hero](https://clonehero.net) expert drum charts, automatically aligned to a YouTube audio track.
 
+If song sections and lyrics exist in songster, they will also be included and synced with the song.
+
 https://github.com/user-attachments/assets/acdc7344-43a9-4fd8-9fef-3fbd0b7c1c34
 
-Given a Songsterr song URL, this tool:
-1. Fetches the tab JSON
-2. Lets you pick a drum track and map each Songsterr drum to a Clone Hero pad/cymbal
-3. Uses Songsterr's per-measure video-point alignment to lock the chart to a specific YouTube video's timing
-4. Downloads the audio via `yt-dlp`,
-5. Writes a ready-to-play Clone Hero song folder (`notes.chart`, `song.ini`, `song.mp3`, `README.txt`).
 
-TLDR: **Songsterr URL** -> `notes.chart` + `song.ini` +`song.mp3`
+### ⚠️ Disclaimer ⚠️
 
-## What to expect
+**The output of this tool is only as good as the input.** 
 
-- **Only drum charts are supported.** Guitar/bass/vocal tracks are filtered out in the GUI.
-- **Output quality depends on the source tab.** If the Songsterr tab is sparse or inaccurate, the chart will be too. chartster doesn't transcribe audio — it transcribes the tab one-for-one.
-- **Sync uses Songsterr's published alignments.** Coverage varies per song. When multiple alignments exist, chartster defaults to the one Songsterr's own site uses, but you're able to pick.
-- **Mappings are auto-set from GM defaults and are editable per-song** via the mapping screen. Exotic percussion (wood blocks, tambourine, etc.) gets a reasonable fallback but may want manual remapping.
-- This is a happy-path tool, not a full editor. 
-
-**Fine-tuning (BPM offsets, adding sections, etc.) still belongs in [Moonscraper](https://github.com/FireFox2000000/moonscraper-chart-editor).**
+If the timing of notes, lyrics, etc is not aligned to the backing track in the songster UI when you play the song there, they will not be aligned in the chart this tool produces. Quality is variable on Songsterr so try different tabs or alignment tracks.
 
 ## Install
 
@@ -50,7 +40,7 @@ pip install -e '.[gui]'
 
 The `[gui]` extra pulls in PySide6 (essentials).
 
-## Usage
+#### Starting
 
 ```bash
 chartster-gui
@@ -62,35 +52,29 @@ If `chartster-gui` isn't on your `PATH` (common with `pip install --user` or an 
 python3 -m chartster.gui
 ```
 
-1. Paste a Songsterr URL
-2. Pick a track
-3. Confirm drum mappings 
-4. Pick a youtube video to sync to
-5. Choose an output folder. 
-6. Import the outputted folder into Clone Hero or Moonscraper!
+### Usage
 
-## Config file
+Chartster is a step-by-step wizard:
 
-On first run Chartster writes `chartster-config.ini` next to the executable (or in the current directory when running from source). It contains:
+1. **URL** — paste a Songsterr drum-tab URL.
+2. **Track** — pick the drum track.
+3. **Mapping** — pick which Clone Hero pad each drum lands on.
+4. **Dynamics** — toggle which ghost/accent combos to keep.
+5. **Lyrics track** — pick a vocal track to embed synced lyrics, or skip.
+6. **Lyrics preview** — visualize the lyrics alongside the chart.
+7. **Alignment** — pick a YouTube source to align the chart to.
+8. **Album art** — pick a YouTube thumbnail for `album.jpg`, or skip.
+9. **Output** — choose the export folder.
+10. **Run** — render and write the song folder.
 
-- `[paths]` — last-used locations for `yt-dlp`, `ffmpeg`, and the parent export folder. Updated automatically.
-- `[mappings]` — default lane assignment for every Songsterr drum ID. **Only written once on first launch** — after that, the file is yours. Edit any value to change the default lane Chartster pre-selects for that drum across all songs. The comment block at the top lists every valid drum ID and the allowed lane labels.
+Output folder, ready to drop into your Clone Hero songs directory:
 
-The mapping screen lets you override defaults for the current run only — those choices are not written back to the config. To change a default permanently, edit `chartster-config.ini` directly.
-
-## Releasing (maintainers)
-
-Tag a commit with `vX.Y.Z` and push the tag — GitHub Actions builds macOS + Windows bundles and attaches them to a new Release automatically.
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
+```
+Metallica - Master of Puppets/
+├── notes.chart
+├── song.ini
+├── README.txt
+├── album.jpg          # if you picked a thumbnail
+└── song.mp3           # if you enabled yt-dlp download
 ```
 
-The workflow lives in `.github/workflows/release.yml`. To test locally:
-
-```bash
-pip install -e '.[gui,build]'
-pyinstaller Chartster.spec
-# -> dist/Chartster.app (macOS) or dist/Chartster/ (Windows)
-```

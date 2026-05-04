@@ -43,6 +43,7 @@ class Measure:
     bpm: Optional[float] = None    # if a tempo change starts at measure start
     tempo_automations: List[Tuple[Fraction, float]] = field(default_factory=list)
     # ^ (beat-position within measure, bpm) — position is already fraction of a whole note
+    section: Optional[str] = None  # CH section marker text (Songsterr `marker.text`)
     voices: List[Voice] = field(default_factory=list)
 
 
@@ -102,12 +103,16 @@ def parse_dict(data: dict) -> Song:
             else:
                 mid_measure.append((pos, bpm))
 
+        marker = m.get("marker") or {}
+        section = (marker.get("text") or "").strip() or None
+
         measure = Measure(
             index=m_idx,
             signature=sigs[m_idx],
             triplet_feel=feels[m_idx],
             bpm=measure_bpm,
             tempo_automations=mid_measure,
+            section=section,
         )
 
         for v in m.get("voices", []):
