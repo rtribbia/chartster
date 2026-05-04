@@ -4,7 +4,7 @@ Convert [Songsterr](https://www.songsterr.com) drum tabs into [Clone Hero](https
 
 If song sections and lyrics exist in songster, they will also be included and synced with the song.
 
-https://github.com/user-attachments/assets/acdc7344-43a9-4fd8-9fef-3fbd0b7c1c34
+https://github.com/user-attachments/assets/5c64cc3c-c8bf-48df-8c67-2029e72ac87a
 
 
 ### ⚠️ Disclaimer ⚠️
