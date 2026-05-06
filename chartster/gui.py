@@ -211,6 +211,7 @@ class State:
     url: str = ""
     song_id: Optional[int] = None
     revision_id: Optional[int] = None
+    revisions_count: int = 0
     meta: dict = field(default_factory=dict)
     tracks: list = field(default_factory=list)
     popular_drum_part_id: Optional[int] = None
@@ -397,13 +398,14 @@ class UrlPage(QWizardPage):
             song_id = sfetch.parse_song_url(url)
             revisions = sfetch.fetch_revisions(song_id)
             rev_id, meta = sfetch.latest_published_revision(song_id, revisions)
-            return song_id, rev_id, meta
+            return song_id, rev_id, meta, len(revisions)
 
         def on_done(result):
-            song_id, rev_id, meta = result
+            song_id, rev_id, meta, revisions_count = result
             self.state.url = url
             self.state.song_id = song_id
             self.state.revision_id = rev_id
+            self.state.revisions_count = revisions_count
             self.state.meta = meta
             current = meta.get("current") or {}
             tracks = meta.get("tracks") or current.get("tracks") or []
@@ -451,6 +453,15 @@ class TrackPage(QWizardPage):
         note.setStyleSheet("color: #888;")
         note.setWordWrap(True)
         outer.addWidget(note)
+        self._revisions_banner = QLabel("")
+        self._revisions_banner.setStyleSheet("color: #888;")
+        self._revisions_banner.setWordWrap(True)
+        self._revisions_banner.setToolTip(
+            "Total revisions of this song on Songsterr. Tracks with more views "
+            "(shown in parens) tend to be more accurate — popular tracks get "
+            "more listeners noticing errors and submitting fixes."
+        )
+        outer.addWidget(self._revisions_banner)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         self._container = QWidget()
@@ -483,14 +494,29 @@ class TrackPage(QWizardPage):
             ),
             key=lambda it: (0 if it[1].get("partId") == popular else 1, it[0]),
         )
+        rc = self.state.revisions_count
+        if rc:
+            self._revisions_banner.setText(
+                f"{rc} revision{'s' if rc != 1 else ''} of this song on Songsterr."
+            )
+        else:
+            self._revisions_banner.setText("")
+
         default_btn = None
         for orig_idx, t in ordered:
             inst = t.get("instrument") or ""
             name = t.get("name") or t.get("title") or ""
             label = f"{name} - {inst}" if name else inst
+            views = t.get("views")
+            if views is not None:
+                label += f"  ({views:,} view{'s' if views != 1 else ''})"
             if t.get("partId") == popular:
                 label += "   ★ most viewed drum track"
             btn = QRadioButton(label)
+            btn.setToolTip(
+                "Tracks with more views tend to be more accurate — popular "
+                "tracks get more listeners noticing errors and submitting fixes."
+            )
             self._group.addButton(btn, orig_idx)
             self._vbox.insertWidget(self._vbox.count() - 1, btn)
             if t.get("partId") == popular and default_btn is None:
