@@ -13,6 +13,7 @@ import gzip
 import json
 import re
 import urllib.request
+from importlib import metadata
 from typing import Optional
 
 META_REVISIONS_URL = "https://www.songsterr.com/api/meta/{song_id}/revisions"
@@ -24,6 +25,13 @@ META_URL = "https://www.songsterr.com/api/meta/{song_id}/{revision_id}"
 _STAGE_HOST = "d3d3l6a6rcgkaf"
 _PUBLISHED_HOSTS = ("dqsljvtekg760", "d34shlm8p2ums2", "d3cqchs6g3b5ew")
 _PART_HOSTS = ("d3rrfvx08uyjp1", "dodkcbujl0ebx", "dj1usja78sinh")
+
+try:
+    _VERSION = metadata.version("chartster")
+except metadata.PackageNotFoundError:
+    _VERSION = "dev"
+# Identify ourselves honestly rather than as Python-urllib or a browser.
+USER_AGENT = f"chartster/{_VERSION} (+https://github.com/rtribbia/chartster)"
 
 _SONG_ID_RE = re.compile(r"-s(\d+)(?:\?|$|#|/)")
 
@@ -38,7 +46,9 @@ def parse_song_url(url: str) -> int:
 
 
 def _get_json(url: str, timeout: float = 10.0) -> dict | list:
-    req = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"})
+    req = urllib.request.Request(url, headers={
+        "Accept-Encoding": "gzip", "User-Agent": USER_AGENT,
+    })
     with urllib.request.urlopen(req, timeout=timeout) as r:
         body = r.read()
         if r.headers.get("Content-Encoding") == "gzip":

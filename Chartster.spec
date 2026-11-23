@@ -1,6 +1,6 @@
 # PyInstaller spec for Chartster.
 # Build with: pyinstaller Chartster.spec
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 block_cipher = None
 
@@ -35,7 +35,8 @@ a = Analysis(
     ["launch_gui.py"],
     pathex=[],
     binaries=[],
-    datas=[("chartster/assets", "chartster/assets")],
+    # copy_metadata lets fetch.USER_AGENT report the real version when frozen.
+    datas=[("chartster/assets", "chartster/assets")] + copy_metadata("chartster"),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

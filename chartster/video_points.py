@@ -13,6 +13,7 @@ import urllib.request
 from fractions import Fraction
 from typing import List, Optional, Tuple
 
+from .fetch import USER_AGENT
 from .songsterr import Song
 
 API_URL = "https://www.songsterr.com/api/video-points/{song_id}/{revision_id}/list"
@@ -20,7 +21,8 @@ API_URL = "https://www.songsterr.com/api/video-points/{song_id}/{revision_id}/li
 
 def fetch(song_id: int, revision_id: int, timeout: float = 10.0) -> list:
     url = API_URL.format(song_id=song_id, revision_id=revision_id)
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
